@@ -1,0 +1,1226 @@
+openapi: 3.1.0
+info:
+  title: eNMRIS API
+  version: 1.0.0
+  description: >
+    Draft application and read-only FHIR R4 contract for the eNMRIS prototype.
+    Registration status changes and recall issuance/closure are approval-gated.
+servers:
+  - url: /
+    description: Current deployment origin
+tags:
+  - name: Authentication
+    description: Staff login and external client token issuance
+  - name: Products
+    description: Staff product search, maintenance, and CMS workbook exchange
+  - name: Registrations
+    description: Registration records, organisations, and status history
+  - name: Batches
+    description: Product batch records
+  - name: Recalls
+    description: Recall issue and closure requests
+  - name: Approvals
+    description: Independent review and decision of regulatory change requests
+  - name: Public verification
+    description: Limited read-only medicine and active-recall search
+  - name: FHIR R4
+    description: Authenticated read-only FHIR interface
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Authenticate an MRA staff user
+      description: Requires email, password, and authenticator-app TOTP. Sets a Secure, HttpOnly, SameSite session cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          headers:
+            Set-Cookie:
+              description: Opaque session cookie; 20-minute idle timeout.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /api/v1/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Revoke the current staff session
+      security:
+        - staffSession: []
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/auth/me:
+    get:
+      tags: [Authentication]
+      operationId: getCurrentUser
+      summary: Get the current user and effective permissions
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/oauth/token:
+    post:
+      tags: [Authentication]
+      operationId: issueClientToken
+      summary: Issue a short-lived FHIR access token
+      description: Uses a registered client ID and secret. Client scopes are assigned administratively; only read-only FHIR scope is supported.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id, client_secret]
+              properties:
+                grant_type:
+                  type: string
+                  const: client_credentials
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+      responses:
+        '200':
+          description: Access token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /api/v1/products:
+    get:
+      tags: [Products]
+      operationId: listProducts
+      summary: Search the staff medicines register
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Product page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Products]
+      operationId: createProduct
+      summary: Create a product record
+      description: Admin or Officer. Product codes must remain strings.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductInput'
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseProduct'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/products/{productId}:
+    get:
+      tags: [Products]
+      operationId: getProduct
+      summary: Get a product and its programme mappings
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: Product
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseProduct'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/organisations:
+    get:
+      tags: [Registrations]
+      operationId: listOrganisations
+      summary: Search medicine holders and manufacturers
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Organisation page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganisationPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Registrations]
+      operationId: createOrganisation
+      summary: Create a medicine holder or manufacturer
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganisationInput'
+      responses:
+        '201':
+          description: Organisation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseOrganisation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/products/import:
+    post:
+      tags: [Products]
+      operationId: importProducts
+      summary: Import the CMS workbook layout
+      description: Validates the complete workbook before writing; does not import explanatory legend rows as programme mappings.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Workbook exceeds the configured upload limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/products/export:
+    get:
+      tags: [Products]
+      operationId: exportProducts
+      summary: Export products in the CMS workbook layout
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: CMS-compatible workbook
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/registrations:
+    post:
+      tags: [Registrations]
+      operationId: createRegistration
+      summary: Create a Pending registration
+      description: Initial creation is audited. Any later status transition requires a separately approved request.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationInput'
+      responses:
+        '201':
+          description: Registration created as Pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseRegistration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/registrations/{registrationId}:
+    get:
+      tags: [Registrations]
+      operationId: getRegistration
+      summary: Get a registration
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      responses:
+        '200':
+          description: Registration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseRegistration'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/registrations/{registrationId}/status-history:
+    get:
+      tags: [Registrations]
+      operationId: getRegistrationStatusHistory
+      summary: Get registration status history
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      responses:
+        '200':
+          description: Status history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/registrations/{registrationId}/status-change-requests:
+    post:
+      tags: [Registrations]
+      operationId: requestRegistrationStatusChange
+      summary: Request a registration status change
+      description: Creates a pending request; it does not change the registration until a different authorized user approves it.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationStatusChangeInput'
+      responses:
+        '202':
+          description: Approval request queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/batches:
+    post:
+      tags: [Batches]
+      operationId: createBatch
+      summary: Add a product batch
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchInput'
+      responses:
+        '201':
+          description: Batch created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseBatch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/batches/{batchId}:
+    get:
+      tags: [Batches]
+      operationId: getBatch
+      summary: Get a batch and its recalls
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/BatchId'
+      responses:
+        '200':
+          description: Batch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseBatch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/recall-change-requests:
+    post:
+      tags: [Recalls]
+      operationId: requestRecallIssue
+      summary: Request a recall covering one or more batches
+      description: The recall becomes Active only after a different authorized user approves the request.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecallIssueInput'
+      responses:
+        '202':
+          description: Recall issue request queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/recalls/{recallId}/closure-requests:
+    post:
+      tags: [Recalls]
+      operationId: requestRecallClosure
+      summary: Request closure of an active recall
+      description: A different authorized user must approve the request before the recall becomes Closed.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RecallId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecallClosureInput'
+      responses:
+        '202':
+          description: Recall closure request queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/approvals:
+    get:
+      tags: [Approvals]
+      operationId: listPendingApprovals
+      summary: List requests the caller may approve
+      security:
+        - staffSession: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, decided]
+            default: pending
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Approval requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/approvals/{requestType}/{requestId}/approve:
+    post:
+      tags: [Approvals]
+      operationId: approveRequest
+      summary: Approve a pending request
+      description: Caller must have Admin or designated Officer approval permission and must not be the requester.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RequestType'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionInput'
+      responses:
+        '200':
+          description: Request approved and change applied atomically
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/approvals/{requestType}/{requestId}/reject:
+    post:
+      tags: [Approvals]
+      operationId: rejectRequest
+      summary: Reject a pending request
+      description: Caller must have Admin or designated Officer approval permission and must not be the requester.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RequestType'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionInput'
+      responses:
+        '200':
+          description: Request rejected; regulatory record remains unchanged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/public/search:
+    get:
+      tags: [Public verification]
+      operationId: publicMedicineSearch
+      summary: Search approved medicines and active recalls
+      description: Returns limited public fields only; no holder details, internal history, staff data, or audit records.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+      responses:
+        '200':
+          description: Limited public search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /fhir/metadata:
+    get:
+      tags: [FHIR R4]
+      operationId: fhirCapabilityStatement
+      summary: Get the FHIR R4 capability statement
+      security:
+        - fhirOAuth:
+            - fhir.read
+      responses:
+        '200':
+          description: FHIR R4 CapabilityStatement
+          content:
+            application/fhir+json:
+              schema:
+                $ref: '#/components/schemas/FhirResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /fhir/Medication:
+    get:
+      tags: [FHIR R4]
+      operationId: searchFhirMedication
+      summary: Search medicines
+      description: Read-only search by CMS product code or medicine name; returns a FHIR R4 Bundle.
+      security:
+        - fhirOAuth:
+            - fhir.read
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: _count
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: FHIR R4 search Bundle
+          content:
+            application/fhir+json:
+              schema:
+                $ref: '#/components/schemas/FhirResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /fhir/Medication/{medicationId}:
+    get:
+      tags: [FHIR R4]
+      operationId: readFhirMedication
+      summary: Read a medicine
+      security:
+        - fhirOAuth:
+            - fhir.read
+      parameters:
+        - name: medicationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: FHIR R4 Medication
+          content:
+            application/fhir+json:
+              schema:
+                $ref: '#/components/schemas/FhirResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    staffSession:
+      type: apiKey
+      in: cookie
+      name: enmris_session
+      description: Opaque, revocable staff session cookie; CSRF protection is required for mutations.
+    fhirOAuth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: /api/v1/oauth/token
+          scopes:
+            fhir.read: Read-only FHIR R4 access
+  parameters:
+    SearchQuery:
+      name: q
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RegistrationId:
+      name: registrationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    BatchId:
+      name: batchId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RecallId:
+      name: recallId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RequestType:
+      name: requestType
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [registration-status, recall]
+  responses:
+    BadRequest:
+      description: Invalid request input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Authentication is required or credentials are invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Caller lacks the required role, permission, or scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Request conflicts with current state or a uniqueness constraint
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: Request rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error, requestId]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        requestId:
+          type: string
+          format: uuid
+    LoginRequest:
+      type: object
+      required: [email, password, totpCode]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6,8}$'
+    UserSummary:
+      type: object
+      required: [id, name, email, role, permissions]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [ADMIN, OFFICER]
+        permissions:
+          type: array
+          items:
+            type: string
+    SessionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [user, idleTimeoutMinutes]
+          properties:
+            user:
+              $ref: '#/components/schemas/UserSummary'
+            idleTimeoutMinutes:
+              type: integer
+              const: 20
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          minimum: 1
+        scope:
+          type: string
+          const: fhir.read
+    ProductInput:
+      type: object
+      required: [productCode, dispensable, name, description, packSize, packRoundingThreshold, roundToZero]
+      properties:
+        productCode:
+          type: string
+          maxLength: 64
+        dispensable:
+          type: string
+          maxLength: 120
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        packSize:
+          type: number
+          minimum: 0
+        packRoundingThreshold:
+          type: number
+          minimum: 0
+        roundToZero:
+          type: boolean
+    Product:
+      allOf:
+        - $ref: '#/components/schemas/ProductInput'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+    ProductPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    DataResponseProduct:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Product'
+    PageMeta:
+      type: object
+      required: [page, pageSize, total]
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    OrganisationInput:
+      type: object
+      required: [name, orgType, countryCode]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        orgType:
+          type: string
+          enum: [HOLDER, MANUFACTURER, BOTH]
+        countryCode:
+          type: string
+          pattern: '^[A-Z]{3}$'
+    Organisation:
+      allOf:
+        - $ref: '#/components/schemas/OrganisationInput'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+    OrganisationPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Organisation'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    DataResponseOrganisation:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Organisation'
+    ImportResult:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [productsImported, programmeLinksImported]
+          properties:
+            productsImported:
+              type: integer
+            programmeLinksImported:
+              type: integer
+            warnings:
+              type: array
+              items:
+                type: string
+    RegistrationInput:
+      type: object
+      required: [productId, holderId, registrationNumber]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        holderId:
+          type: string
+          format: uuid
+        registrationNumber:
+          type: string
+          maxLength: 100
+        approvalDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+        statusReason:
+          type: string
+    Registration:
+      allOf:
+        - $ref: '#/components/schemas/RegistrationInput'
+        - type: object
+          required: [id, status]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [PENDING, REGISTERED, SUSPENDED, REVOKED, EXPIRED]
+    DataResponseRegistration:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Registration'
+    RegistrationStatusChangeInput:
+      type: object
+      required: [targetStatus, reason]
+      properties:
+        targetStatus:
+          type: string
+          enum: [REGISTERED, SUSPENDED, REVOKED]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+    ApprovalRequest:
+      type: object
+      required: [id, requestType, decision, requestedBy, requestedAt, reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+        requestType:
+          type: string
+          enum: [REGISTRATION_STATUS, RECALL_ISSUE, RECALL_CLOSE]
+        decision:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+        requestedBy:
+          type: string
+          format: uuid
+        requestedAt:
+          type: string
+          format: date-time
+        decidedBy:
+          type: string
+          format: uuid
+        decidedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+        targetStatus:
+          type: string
+          enum: [REGISTERED, SUSPENDED, REVOKED, ACTIVE, CLOSED]
+        recallClass:
+          type: string
+          enum: [I, II, III]
+        batchIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+    ApprovalRequestResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ApprovalRequest'
+    ApprovalPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalRequest'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    DecisionInput:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+    HistoryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    BatchInput:
+      type: object
+      required: [productId, batchCode, expiryDate]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        batchCode:
+          type: string
+          maxLength: 100
+        manufactureDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+    Batch:
+      allOf:
+        - $ref: '#/components/schemas/BatchInput'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+    DataResponseBatch:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Batch'
+    RecallIssueInput:
+      type: object
+      required: [recallClass, reason, batchIds]
+      properties:
+        recallClass:
+          type: string
+          enum: [I, II, III]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        batchIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    RecallClosureInput:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+    PublicSearchResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [productCode, name, registrationStatus, activeRecalls]
+            properties:
+              productCode:
+                type: string
+              name:
+                type: string
+              registrationStatus:
+                type: string
+                const: REGISTERED
+              activeRecalls:
+                type: array
+                items:
+                  type: object
+                  required: [recallClass, reason, batchCodes]
+                  properties:
+                    recallClass:
+                      type: string
+                      enum: [I, II, III]
+                    reason:
+                      type: string
+                    batchCodes:
+                      type: array
+                      items:
+                        type: string
+    FhirResource:
+      type: object
+      required: [resourceType]
+      properties:
+        resourceType:
+          type: string
+        id:
+          type: string
+        meta:
+          type: object
+        entry:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true

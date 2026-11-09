@@ -1,4 +1,4 @@
--- eNMRIS schema baseline for MySQL 8.0.16 or later (enforced CHECK constraints).
+\-- eNMRIS schema baseline for MySQL 8.0.16 or later (enforced CHECK constraints).
 -- Run against a fresh database. Configure the application DB account separately;
 -- it must not have UPDATE or DELETE privileges on audit_log.
 CREATE DATABASE IF NOT EXISTS enmris
@@ -14,8 +14,7 @@ CREATE TABLE app_users (
   email VARCHAR(254) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   role ENUM('ADMIN', 'OFFICER') NOT NULL,
-  totp_secret_encrypted VARBINARY(512) NULL
-    COMMENT 'Encrypted time-based one-time password (TOTP) authenticator secret',
+  totp_secret_encrypted VARBINARY(512) NULL,
   mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -54,15 +53,6 @@ CREATE TABLE app_sessions (
   CONSTRAINT fk_app_sessions_user FOREIGN KEY (user_id)
     REFERENCES app_users (id) ON DELETE RESTRICT,
   CONSTRAINT chk_app_sessions_expiry CHECK (expires_at > created_at)
-) ENGINE=InnoDB;
-
-CREATE TABLE auth_login_attempts (
-  bucket_hash BINARY(32) NOT NULL,
-  window_started_at DATETIME(3) NOT NULL,
-  failure_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
-  locked_until DATETIME(3) NULL,
-  PRIMARY KEY (bucket_hash),
-  KEY ix_auth_login_attempts_lock (locked_until)
 ) ENGINE=InnoDB;
 
 CREATE TABLE api_clients (

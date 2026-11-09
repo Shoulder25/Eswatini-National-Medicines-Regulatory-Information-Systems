@@ -55,7 +55,7 @@ Every approval or rejection records the requester, approver, reason, decision, a
 - **`recall_batches`** — `recall_id`, `batch_id`; supports one recall covering multiple batches and a batch having recall history.
 - **`recall_change_requests`** — `id`, request type (`ISSUE`, `CLOSE`), optional `recall_id`, class/reason/target status as applicable, requester, decision, approver, and timestamps. An associated request-batch table records the batches for a proposed recall.
 - **`recall_status_history`** — `id`, `recall_id`, old/new status, reason, requester, approver, linked change request, and timestamp.
-- **`app_users`** — `id`, `name`, unique `email`, `password_hash`, `role` (`ADMIN`, `OFFICER`), encrypted TOTP secret and MFA state, and `active`.
+- **`app_users`** — `id`, `name`, unique `email`, `password_hash`, `role` (`ADMIN`, `OFFICER`), encrypted time-based one-time password (TOTP) secret and MFA state, and `active`.
 - **`app_user_permissions`** — grants scoped permissions such as `approve_regulatory_changes` to designated Officers; record who granted/revoked each permission.
 - **`app_sessions`** — user, hash of the opaque session token, creation/last-activity/expiry times, and revocation time.
 - **`api_clients`**, **`api_client_scopes`**, and **`api_access_tokens`** — client identifier, hashed secret, read-only scopes, hashed short-lived bearer tokens, active/expiry/revocation state, and timestamps.
@@ -69,7 +69,7 @@ Base path: `/api/v1`. All staff routes require authentication and authorization.
 
 ### 4.1 Authentication and staff
 
-- `POST /auth/login` — email, password, and TOTP code; creates a secure session.
+- `POST /auth/login` — email, password, and time-based one-time password (TOTP) code; creates a secure session.
 - `POST /auth/logout` — revokes the current session.
 - `GET /auth/me` — returns the authenticated user and effective permissions.
 - `GET /approvals?status=pending` — lists regulatory requests the caller is permitted to review.
@@ -103,12 +103,12 @@ Base path: `/api/v1`. All staff routes require authentication and authorization.
 
 - Success: `{ "data": ..., "meta": ... }`; list endpoints use bounded pagination.
 - Error: `{ "error": { "code": "...", "message": "...", "details": ... }, "requestId": "..." }`.
-- Use appropriate HTTP status codes. Never return stack traces, SQL, secrets, TOTP values, or password hashes.
+- Use appropriate HTTP status codes. Never return stack traces, SQL, secrets, time-based one-time password (TOTP) values, or password hashes.
 
 ## 5. Security requirements
 
 - **RBAC:** enforce the role and scoped approval permission on every protected route and FHIR scope.
-- **MFA:** require password plus authenticator-app TOTP for staff in the MVP. TOTP is not phishing-resistant; passkeys/WebAuthn are recommended before production.
+- **MFA:** require a password plus an authenticator-app time-based one-time password (TOTP) for staff in the MVP. This method is not phishing-resistant; passkeys/WebAuthn are recommended before production.
 - **Transport:** enforce TLS and HSTS in production. Certificate pinning is not applicable to the current web application; reconsider only if a native mobile app is built.
 - **Input/database:** validate request bodies, parameters, uploaded files, and search terms; use parameterized queries exclusively.
 - **Login protection:** rate-limit after 5 failed attempts per account/IP in 15 minutes; apply temporary backoff rather than permanent lockout.

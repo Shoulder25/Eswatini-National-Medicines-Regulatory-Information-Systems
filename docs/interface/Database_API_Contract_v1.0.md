@@ -1,3 +1,4 @@
+
 # eNMRIS Database Schema and API Contract
 
 **Version:** 1.0  
@@ -9,7 +10,7 @@
 
 This contract establishes the data model, approval workflow, and application/FHIR interfaces before feature implementation. It reflects the project plan and the decisions confirmed by the team. `openapi.yaml` is the machine-readable description of the HTTP contract.
 
-- MySQL 8.0.16 or later, InnoDB, and `utf8mb4`; application tables use `snake_case`.
+- MySQL 8, InnoDB, and `utf8mb4`; application tables use `snake_case`.
 - CMS product codes are strings, never numbers, to preserve identifiers exactly.
 - The CMS workbook is the source of truth for product-template columns. It contains 19 product rows and 18 unique `programProducts` records. Two trailing rows in that sheet are programme-name notes, not records; the plan's figure of 18 programme links is correct.
 - Registration status changes and recall issuance/closure require approval by a different person from the requester.
@@ -72,7 +73,7 @@ Base path: `/api/v1`. All staff routes require authentication and authorization.
 - `POST /auth/logout` — revokes the current session.
 - `GET /auth/me` — returns the authenticated user and effective permissions.
 - `GET /approvals?status=pending` — lists regulatory requests the caller is permitted to review.
-- `POST /approvals/{requestType}/{requestId}/approve` and `POST /approvals/{requestType}/{requestId}/reject` — record a decision and reason; requester cannot decide their own request.
+- `POST /approvals/{requestId}/approve` and `POST /approvals/{requestId}/reject` — record a decision and reason; requester cannot decide their own request.
 
 ### 4.2 Register and regulatory records
 

@@ -55,7 +55,8 @@ function createApp({ database }) {
     const status = error.status === 400 ? 400 : 500;
     const code = status === 400 ? 'INVALID_JSON' : 'INTERNAL_ERROR';
     if (status === 500) {
-      console.error('Unhandled request error:', error.name);
+      const errorCode = typeof error.code === 'string' ? error.code : error.name;
+      console.error(`Unhandled request error (${req.requestId}, ${errorCode}).`);
     }
 
     return res.status(status).json({

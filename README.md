@@ -57,6 +57,18 @@ trusted reverse proxy and set `TRUST_PROXY_HOPS` to the exact proxy-hop count.
 The API requires HTTPS for authentication and returns an HSTS header on secure
 production requests; configure HTTPS at the reverse proxy as well.
 
+## Run the staff interface locally
+
+1. Start the backend from `backend` with `npm start` and leave it running.
+2. In a second terminal, run `npm install` and `npm run dev` from `frontend`.
+3. Open `http://localhost:5173`. The Vite development server proxies the
+   `/api` requests to the backend; the browser session remains in an
+   HttpOnly cookie and is not stored in local storage.
+
+The interface supports staff sign-in, session restoration, and sign-out. If
+`APP_ORIGIN` is set in `backend/.env`, set it to `http://localhost:5173` for
+local frontend development so the sign-out origin check accepts the request.
+
 ## Troubleshoot MySQL `ER_ACCESS_DENIED_ERROR`
 
 Check whether the MySQL account exists, including its host:

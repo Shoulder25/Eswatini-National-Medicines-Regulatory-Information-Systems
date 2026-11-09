@@ -6,6 +6,7 @@ const readline = require('node:readline/promises');
 const { stdin, stdout } = require('node:process');
 const OTPAuth = require('otpauth');
 const database = require('../config/database');
+const { getUtcConnection } = require('../config/connection');
 const { decodeKey, encryptTotpSecret, hashPassword, verifyTotpCode } = require('../services/auth');
 
 function readHidden(prompt) {
@@ -88,7 +89,7 @@ async function main() {
     throw new Error('Authenticator code is invalid; no administrator was created');
   }
 
-  const connection = await database.getConnection();
+  const connection = await getUtcConnection(database);
   let lockAcquired = false;
   try {
     const [lockRows] = await connection.execute(

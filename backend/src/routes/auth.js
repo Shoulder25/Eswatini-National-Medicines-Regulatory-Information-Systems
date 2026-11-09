@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const express = require('express');
+const { getUtcConnection } = require('../config/connection');
 const {
   createLoginBucket,
   decodeKey,
@@ -110,7 +111,7 @@ function createAuthRouter({ database }) {
 
     let connection;
     try {
-      connection = await database.getConnection();
+      connection = await getUtcConnection(database);
       await connection.beginTransaction();
       await connection.execute(
         `INSERT IGNORE INTO auth_login_attempts (bucket_hash, window_started_at, failure_count, locked_until)
@@ -242,7 +243,7 @@ function createAuthRouter({ database }) {
 
     let connection;
     try {
-      connection = await database.getConnection();
+      connection = await getUtcConnection(database);
       const tokenHash = hashSessionToken(token);
       const [result] = await connection.execute(
         `UPDATE app_sessions
@@ -302,7 +303,7 @@ function createAuthRouter({ database }) {
 
     let connection;
     try {
-      connection = await database.getConnection();
+      connection = await getUtcConnection(database);
       await connection.beginTransaction();
       await connection.execute(
         `UPDATE app_sessions SET revoked_at = UTC_TIMESTAMP(3)

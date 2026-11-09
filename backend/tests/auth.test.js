@@ -64,7 +64,11 @@ test('successful staff login creates a secure opaque session and returns role pe
     mfa_enabled: 1,
   };
   const statements = [];
+  let utcTimezoneSet = false;
   const connection = {
+    async query(sql) {
+      utcTimezoneSet = sql === "SET time_zone = '+00:00'";
+    },
     async beginTransaction() {},
     async commit() {},
     async rollback() {},
@@ -120,6 +124,7 @@ test('successful staff login creates a secure opaque session and returns role pe
     assert.equal(body.data.user.role, 'ADMIN');
     assert.deepEqual(body.data.user.permissions, ['PRODUCT_READ']);
     assert.match(response.headers.get('set-cookie'), /HttpOnly; SameSite=Lax/);
+    assert.equal(utcTimezoneSet, true);
     assert.ok(statements.some((sql) => sql.includes('INSERT INTO app_sessions')));
     assert.ok(statements.some((sql) => sql.includes('INSERT INTO audit_log')));
   } finally {
@@ -166,6 +171,7 @@ test('login is rate-limited before looking up credentials', async () => {
   process.env.NODE_ENV = 'test';
 
   const connection = {
+    async query() {},
     async beginTransaction() {},
     async commit() {},
     async rollback() {},

@@ -15,6 +15,7 @@ const {
 } = require('../services/auth');
 const { writeAudit } = require('../services/audit');
 const { validateEmailAddress } = require('../services/email-domain');
+const { ROLE_CODES } = require('../config/roles');
 
 async function recordRejectedEmail(address, reason) {
   const connection = await getUtcConnection(database);
@@ -22,7 +23,7 @@ async function recordRejectedEmail(address, reason) {
     await writeAudit(connection, {
       action: 'EMAIL_ADDRESS_REJECTED',
       entityName: 'app_users',
-      afterValue: { address, role: 'ADMIN', reason },
+      afterValue: { address, roleCode: ROLE_CODES.ADMIN, reason },
       reason,
     });
   } finally {
@@ -100,14 +101,15 @@ async function main() {
     const passwordHash = await hashPassword(password);
     await connection.execute(
       `INSERT INTO app_users
-         (id, name, email, password_hash, role, officer_position,
+         (id, name, email, password_hash, role_code, officer_position,
           totp_secret_encrypted, totp_last_used_step, mfa_enabled)
-       VALUES (?, ?, ?, ?, 'ADMIN', NULL, ?, ?, TRUE)`,
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, TRUE)`,
       [
         userId,
         name,
         email,
         passwordHash,
+        ROLE_CODES.ADMIN,
         encryptTotpSecret(totpSecret.base32, process.env.AUTH_ENCRYPTION_KEY),
         totpStep,
       ],
@@ -116,7 +118,7 @@ async function main() {
       action: 'ADMIN_BOOTSTRAPPED',
       entityName: 'app_users',
       recordId: userId,
-      afterValue: { email, role: 'ADMIN', mfaEnabled: true },
+      afterValue: { email, roleCode: ROLE_CODES.ADMIN, mfaEnabled: true },
       reason: 'Trusted local bootstrap command',
     });
     await connection.commit();

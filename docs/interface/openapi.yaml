@@ -13,6 +13,8 @@ tags:
     description: Staff login and external client token issuance
   - name: Admin replacement
     description: Private invitation, Board Officer approval, and replacement Admin enrollment
+  - name: Officer replacement
+    description: Head-of-IT requests, continuing-Officer approval, and position handover
   - name: Products
     description: Staff product search, maintenance, and CMS workbook exchange
   - name: Registrations
@@ -33,7 +35,7 @@ paths:
       tags: [Authentication]
       operationId: login
       summary: Authenticate an MRA staff user
-      description: Requires email and password. Enrolled users also provide a TOTP code; an unenrolled Board Officer receives a short-lived first-sign-in enrollment challenge instead of a session.
+      description: Requires email and password. Enrolled users also provide a TOTP code; an unenrolled Board Officer or Head of IT receives a short-lived first-sign-in enrollment challenge instead of a session.
       security: []
       requestBody:
         required: true
@@ -43,7 +45,7 @@ paths:
               $ref: '#/components/schemas/LoginRequest'
       responses:
         '200':
-          description: Login successful; an unenrolled Board Officer instead receives an enrollment challenge
+          description: Login successful; an unenrolled Board Officer or Head of IT instead receives an enrollment challenge
           headers:
             Set-Cookie:
               description: Opaque session cookie; 20-minute idle timeout. Absent when first-sign-in enrollment is required.
@@ -125,7 +127,7 @@ paths:
       tags: [Admin replacement]
       operationId: listAdminInvitations
       summary: List Admin replacement requests
-      description: Admins and ADMIN_TESTER users see their own requests; Board Chair and Vice Chair see the review queue. Setup tokens are never returned.
+      description: Access is controlled by invite_admin and approve_admin_replacement permissions; Board-position checks remain enforced for decisions. Position display labels are returned separately from stable codes. Setup tokens are never returned.
       security:
         - staffSession: []
       responses:
@@ -191,7 +193,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AdminInvitationDecisionRequest'
+              $ref: '#/components/schemas/OfficerReplacementDecisionRequest'
       responses:
         '200':
           description: Decision recorded; approval email delivery is reported without exposing the setup token
@@ -292,6 +294,176 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminSetupCompleteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements:
+    get:
+      tags: [Officer replacement]
+      operationId: listOfficerReplacements
+      summary: List Officer replacement requests
+      description: Users with start_replacement see their own requests; users with approve_replacement see the review queue. Board-position display labels are returned separately from stable codes.
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: Replacement requests; tokens and authenticator secrets are never returned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [requests, boardPositions]
+                    properties:
+                      requests:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OfficerReplacement'
+                      boardPositions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/BoardPosition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Officer replacement]
+      operationId: createOfficerReplacement
+      summary: Request replacement of one Board Officer
+      description: Active Head of IT only. Both current Officers are notified; only the continuing non-outgoing Officer may decide.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficerReplacementCreateRequest'
+      responses:
+        '201':
+          description: Request pending approval; notice delivery is reported per Officer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficerReplacementCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements/{requestId}/decision:
+    post:
+      tags: [Officer replacement]
+      operationId: decideOfficerReplacement
+      summary: Approve or reject an Officer replacement
+      description: Only the saved continuing Officer may decide, using a fresh authenticator code and written reason.
+      security:
+        - staffSession: []
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminInvitationDecisionRequest'
+      responses:
+        '200':
+          description: Decision recorded; approval reports setup email delivery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationDecisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements/{requestId}/reissue:
+    post:
+      tags: [Officer replacement]
+      operationId: reissueOfficerSetupLink
+      summary: Reissue a failed or expired Officer setup link
+      description: Only the saved continuing Officer may reissue, with a reason and fresh authenticator code.
+      security:
+        - staffSession: []
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSetupReissueRequest'
+      responses:
+        '200':
+          description: New setup email delivery result
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements/setup/inspect:
+    post:
+      tags: [Officer replacement]
+      operationId: inspectOfficerSetupToken
+      summary: Validate a replacement Officer setup token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupTokenRequest'
+      responses:
+        '200':
+          description: Incoming Officer name, email, and token expiry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficerSetupInspectionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/v1/officer-replacements/setup/complete:
+    post:
+      tags: [Officer replacement]
+      operationId: completeOfficerReplacementSetup
+      summary: Create incoming Officer account and enroll MFA
+      description: Public single-use enrollment. The outgoing Officer remains active until the incoming Officer completes a successful sign-in.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficerSetupCompleteRequest'
+      responses:
+        '201':
+          description: Officer account created; test sign-in is still required
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
@@ -1097,13 +1269,17 @@ components:
                   format: email
                 role:
                   type: string
-                  const: OFFICER
-                officerPosition:
+                roleCode:
                   type: string
-                  enum: [BOARD_CHAIR, BOARD_VICE_CHAIR]
+                officerPosition:
+                  type: [string, 'null']
+                roleLabel:
+                  type: string
+                officerPositionLabel:
+                  type: [string, 'null']
     UserSummary:
       type: object
-      required: [id, name, email, role, permissions]
+      required: [id, name, email, role, roleCode, roleLabel, permissions]
       properties:
         id:
           type: string
@@ -1115,10 +1291,17 @@ components:
           format: email
         role:
           type: string
-          enum: [ADMIN, ADMIN_TESTER, OFFICER]
+        roleCode:
+          type: string
+          description: Stable role identifier; authorization never depends on display labels.
+        roleLabel:
+          type: string
+          description: Editable display label for roleCode at response time.
         officerPosition:
           type: [string, 'null']
-          enum: [BOARD_CHAIR, BOARD_VICE_CHAIR, null]
+        officerPositionLabel:
+          type: [string, 'null']
+          description: Editable display label for officerPosition at response time.
         permissions:
           type: array
           items:
@@ -1160,6 +1343,180 @@ components:
         totpCode:
           type: string
           pattern: '^[0-9]{6}$'
+    SetupTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+    OfficerReplacementCreateRequest:
+      type: object
+      required: [outgoingPosition, incomingName, incomingEmail]
+      properties:
+        outgoingPosition:
+          type: string
+          enum: [BOARD_CHAIR, BOARD_VICE_CHAIR]
+        incomingName:
+          type: string
+          minLength: 1
+          maxLength: 160
+        incomingEmail:
+          type: string
+          format: email
+          maxLength: 254
+    OfficerReplacementDecisionRequest:
+      type: object
+      required: [decision, reason, totpCode]
+      properties:
+        decision:
+          type: string
+          enum: [APPROVE, REJECT]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    OfficerSetupCompleteRequest:
+      type: object
+      required: [token, password, totpSecret, totpCode]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 1024
+        totpSecret:
+          type: string
+          pattern: '^[A-Z2-7]{32}$'
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    BoardPosition:
+      type: object
+      required: [code, label]
+      properties:
+        code:
+          type: string
+          description: Stable role code used for workflow decisions.
+        label:
+          type: string
+          description: Editable display label.
+    OfficerReplacement:
+      type: object
+      required: [id, request_type, outgoing_position, incoming_name, incoming_email, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        request_type:
+          type: string
+          enum: [HEAD_OF_IT, EMERGENCY_BOOTSTRAP]
+        requested_by:
+          type: [string, 'null']
+          format: uuid
+        outgoing_position:
+          type: string
+        outgoing_position_label:
+          type: string
+        continuing_officer_user_id:
+          type: [string, 'null']
+          format: uuid
+        incoming_name:
+          type: string
+        incoming_email:
+          type: string
+          format: email
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, REJECTED, SETUP_COMPLETE, EMERGENCY_SETUP, COMPLETED, EXPIRED]
+        approval_expires_at:
+          type: [string, 'null']
+          format: date-time
+        decided_at:
+          type: [string, 'null']
+          format: date-time
+        decision_officer_position:
+          type: [string, 'null']
+        decision_officer_position_label:
+          type: [string, 'null']
+        decision_reason:
+          type: [string, 'null']
+        delivery_status:
+          type: string
+          enum: [NOT_SENT, SENT, FAILED]
+        email_sent_at:
+          type: [string, 'null']
+          format: date-time
+        setup_token_expires_at:
+          type: [string, 'null']
+          format: date-time
+        setup_completed_at:
+          type: [string, 'null']
+          format: date-time
+        test_sign_in_at:
+          type: [string, 'null']
+          format: date-time
+        outgoing_deactivated_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    OfficerReplacementCreateResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, status, approvalExpiresInDays, noticeDelivery]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              const: PENDING_APPROVAL
+            approvalExpiresInDays:
+              type: integer
+              const: 7
+            noticeDelivery:
+              type: array
+              items:
+                type: object
+                required: [position, status]
+                properties:
+                  position:
+                    type: string
+                  positionLabel:
+                    type: string
+                  status:
+                    type: string
+                    enum: [SENT, FAILED]
+    OfficerSetupInspectionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [requestId, name, email, expiresAt]
+          properties:
+            requestId:
+              type: string
+              format: uuid
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            expiresAt:
+              type: string
+              format: date-time
     AdminInvitation:
       type: object
       required: [id, invitee_name, invitee_email, status, approval_expires_at, created_at]
@@ -1183,7 +1540,8 @@ components:
           format: date-time
         decision_officer_position:
           type: [string, 'null']
-          enum: [BOARD_CHAIR, BOARD_VICE_CHAIR, null]
+        decision_officer_position_label:
+          type: [string, 'null']
         decision_reason:
           type: [string, 'null']
         delivery_status:

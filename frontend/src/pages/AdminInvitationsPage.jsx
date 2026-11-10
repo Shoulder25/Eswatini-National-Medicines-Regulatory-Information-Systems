@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
+import { BOARD_POSITION_CODES, PERMISSION_CODES, ROLE_CODES } from '../config/roles.js';
 import {
   createAdminInvitation,
   decideAdminInvitation,
@@ -180,7 +181,7 @@ function InvitationCard({ invitation, isOfficer, onChanged }) {
           <div>
             <dt className="text-slate-500">Decision</dt>
             <dd className="mt-1 font-medium text-slate-800">
-              {invitation.decision_officer_position?.replaceAll('_', ' ')} · {formatDate(invitation.decided_at)}
+              {invitation.decision_officer_position_label} · {formatDate(invitation.decided_at)}
             </dd>
           </div>
         )}
@@ -209,8 +210,11 @@ function InvitationCard({ invitation, isOfficer, onChanged }) {
 
 export default function AdminInvitationsPage() {
   const { user } = useAuth();
-  const isOfficer = user.role === 'OFFICER' &&
-    ['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(user.officerPosition);
+  const permissions = user.permissions || [];
+  const mayInvite = permissions.includes(PERMISSION_CODES.INVITE_ADMIN);
+  const mayReview = permissions.includes(PERMISSION_CODES.APPROVE_ADMIN_REPLACEMENT);
+  const isOfficer = user.roleCode === ROLE_CODES.OFFICER &&
+    BOARD_POSITION_CODES.includes(user.officerPosition) && mayReview;
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState('');
@@ -263,16 +267,16 @@ export default function AdminInvitationsPage() {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink">Admin replacement</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
             {isOfficer
-              ? `Review replacement Admin requests as ${user.officerPosition.replaceAll('_', ' ')}. A fresh authenticator code and written reason are required.`
+              ? `Review replacement Admin requests as ${user.officerPositionLabel || user.officerPosition}. A fresh authenticator code and written reason are required.`
               : 'Submit a replacement request. A Board Officer must independently approve it before setup can begin.'}
           </p>
         </div>
 
-        {!isOfficer && ['ADMIN', 'ADMIN_TESTER'].includes(user.role) && (
+        {mayInvite && (
           <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
             <h2 className="text-lg font-semibold text-ink">Invite a replacement Admin</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              {user.role === 'ADMIN_TESTER' && 'Temporary test role: invitations are allowed, but only a Board Officer can approve them. '}
+              {user.roleCode === ROLE_CODES.ADMIN_TESTER && 'Temporary test role: invitations are allowed, but only a Board Officer can approve them. '}
               Use the person’s official organization email. There is no public Admin sign-up; the email is checked against the configured exact-domain allowlist.
             </p>
             <form className="mt-6 grid gap-5 sm:grid-cols-2" onSubmit={submitInvite}>

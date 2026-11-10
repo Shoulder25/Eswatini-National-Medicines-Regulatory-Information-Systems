@@ -5,6 +5,8 @@ import LoginPage from './pages/LoginPage.jsx';
 import AdminInvitationsPage from './pages/AdminInvitationsPage.jsx';
 import AdminSetupPage from './pages/AdminSetupPage.jsx';
 import OfficerMfaEnrollmentPage from './pages/OfficerMfaEnrollmentPage.jsx';
+import OfficerReplacementsPage from './pages/OfficerReplacementsPage.jsx';
+import OfficerSetupPage from './pages/OfficerSetupPage.jsx';
 
 function LoadingScreen({ message = 'Checking your secure session…' }) {
   return (
@@ -54,6 +56,7 @@ export default function App() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/setup-admin" element={<AdminSetupPage />} />
+      <Route path="/setup-officer" element={<OfficerSetupPage />} />
       <Route path="/enroll-officer-mfa" element={<OfficerMfaEnrollmentPage />} />
       <Route path="/dashboard" element={<ProtectedDashboard />} />
       <Route
@@ -61,6 +64,14 @@ export default function App() {
         element={(
           <ProtectedDashboard>
             <AdminInvitationsPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/officer-replacements"
+        element={(
+          <ProtectedDashboard>
+            <OfficerReplacementsPage />
           </ProtectedDashboard>
         )}
       />

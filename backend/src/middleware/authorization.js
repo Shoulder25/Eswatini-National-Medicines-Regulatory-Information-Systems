@@ -1,3 +1,9 @@
+const {
+  BOARD_POSITION_CODES,
+  PERMISSION_CODES,
+  ROLE_CODES,
+} = require('../config/roles');
+
 function authorizationFailure(req, res, status, code, message) {
   return res.status(status).json({
     error: { code, message },
@@ -11,7 +17,8 @@ function requireRole(...roles) {
       return authorizationFailure(req, res, 401, 'UNAUTHENTICATED', 'Authentication is required');
     }
 
-    const adminTesterHasAdminRole = req.user.role === 'ADMIN_TESTER' && roles.includes('ADMIN');
+    const adminTesterHasAdminRole =
+      req.user.role === ROLE_CODES.ADMIN_TESTER && roles.includes(ROLE_CODES.ADMIN);
     if (!roles.includes(req.user.role) && !adminTesterHasAdminRole) {
       return authorizationFailure(req, res, 403, 'FORBIDDEN', 'Caller lacks the required role');
     }
@@ -38,16 +45,15 @@ function requirePermission(...permissions) {
 }
 
 function requireBoardOfficer(req, res, next) {
-  const allowedPositions = ['BOARD_CHAIR', 'BOARD_VICE_CHAIR'];
-  if (!req.user) {
-    return authorizationFailure(req, res, 401, 'UNAUTHENTICATED', 'Authentication is required');
-  }
-
-  if (req.user.role !== 'OFFICER' || !allowedPositions.includes(req.user.officerPosition)) {
-    return authorizationFailure(req, res, 403, 'FORBIDDEN', 'Board Officer approval is required');
-  }
-
-  return next();
+  return requirePermission(PERMISSION_CODES.APPROVE_ADMIN_REPLACEMENT)(req, res, () => {
+    if (
+      req.user.roleCode !== ROLE_CODES.OFFICER ||
+      !BOARD_POSITION_CODES.includes(req.user.officerPosition)
+    ) {
+      return authorizationFailure(req, res, 403, 'FORBIDDEN', 'An active Board Officer account is required');
+    }
+    return next();
+  });
 }
 
 module.exports = { requireBoardOfficer, requirePermission, requireRole };

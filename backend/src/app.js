@@ -3,6 +3,7 @@ const { createHealthRouter } = require('./routes/health');
 const { createAuthRouter } = require('./routes/auth');
 const { randomUUID } = require('node:crypto');
 const { createAdminInvitationRouter } = require('./routes/admin-invitations');
+const { createOfficerReplacementRouter } = require('./routes/officer-replacements');
 const { createSessionMiddleware } = require('./middleware/session');
 
 function createApp({ database }) {
@@ -53,6 +54,22 @@ function createApp({ database }) {
         authenticate: createSessionMiddleware(database),
       }),
     );
+    app.use(
+      '/api/v1/officer-replacements',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createOfficerReplacementRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
   }
 
   app.use((req, res) => {
@@ -73,10 +90,10 @@ function createApp({ database }) {
     const schemaMessage = String(error.sqlMessage || '');
     const migrationRequired = (
       error.code === 'ER_NO_SUCH_TABLE' &&
-      /admin_invitations|auth_login_attempts/i.test(schemaMessage)
+      /admin_invitations|officer_replacement_requests|auth_login_attempts|role_permissions|\broles\b/i.test(schemaMessage)
     ) || (
       error.code === 'ER_BAD_FIELD_ERROR' &&
-      /officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at/i.test(schemaMessage)
+      /role_code|actor_role_code|actor_role_label|officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at/i.test(schemaMessage)
     );
     if (migrationRequired) {
       return res.status(503).json({

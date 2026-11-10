@@ -1,0 +1,20 @@
+export const ROLE_CODES = Object.freeze({
+  ADMIN: 'ADMIN',
+  ADMIN_TESTER: 'ADMIN_TESTER',
+  OFFICER: 'OFFICER',
+  HEAD_OF_IT: 'HEAD_OF_IT',
+  BOARD_CHAIR: 'BOARD_CHAIR',
+  BOARD_VICE_CHAIR: 'BOARD_VICE_CHAIR',
+});
+
+export const PERMISSION_CODES = Object.freeze({
+  INVITE_ADMIN: 'invite_admin',
+  APPROVE_ADMIN_REPLACEMENT: 'approve_admin_replacement',
+  START_REPLACEMENT: 'start_replacement',
+  APPROVE_REPLACEMENT: 'approve_replacement',
+});
+
+export const BOARD_POSITION_CODES = Object.freeze([
+  ROLE_CODES.BOARD_CHAIR,
+  ROLE_CODES.BOARD_VICE_CHAIR,
+]);

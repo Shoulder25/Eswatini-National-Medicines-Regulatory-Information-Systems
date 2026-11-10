@@ -1,7 +1,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const nodemailer = require('nodemailer');
-const { sendAdminSetupEmail } = require('../src/services/mailer');
+const {
+  sendAdminSetupEmail,
+  sendOfficerSetupEmail,
+  sendOfficerReplacementNotice,
+} = require('../src/services/mailer');
 
 test('development setup emails route to the configured allowlisted test inbox', async () => {
   const originalCreateTransport = nodemailer.createTransport;
@@ -70,6 +74,50 @@ test('Ethereal SMTP preserves the invitee address for viewing in Ethereal Messag
 
     assert.equal(transportOptions.host, 'smtp.ethereal.email');
     assert.equal(deliveredMessage.to, 'brionna.reichert@ethereal.email');
+  } finally {
+    nodemailer.createTransport = originalCreateTransport;
+  }
+});
+
+test('Officer replacement emails target the configured Ethereal recipient and setup page', async () => {
+  const originalCreateTransport = nodemailer.createTransport;
+  const messages = [];
+  nodemailer.createTransport = () => ({
+    async sendMail(message) {
+      messages.push(message);
+    },
+  });
+  const env = {
+    NODE_ENV: 'development',
+    ALLOWED_EMAIL_DOMAINS: 'ethereal.email',
+    SMTP_HOST: 'smtp.ethereal.email',
+    SMTP_PORT: '587',
+    SMTP_USER: 'ethereal-test-user',
+    SMTP_PASS: 'ethereal-test-password',
+    MAIL_FROM: 'no-reply@ethereal.email',
+    APP_BASE_URL: 'http://localhost:5173',
+  };
+
+  try {
+    await sendOfficerReplacementNotice({
+      email: 'kade.bechtelar@ethereal.email',
+      officerName: 'Kade Bechtelar',
+      incomingName: 'Incoming Officer',
+      incomingEmail: 'incoming@ethereal.email',
+      outgoingPosition: 'BOARD_CHAIR',
+      env,
+    });
+    await sendOfficerSetupEmail({
+      email: 'incoming@ethereal.email',
+      name: 'Incoming Officer',
+      token: 'test-only-token',
+      env,
+    });
+
+    assert.equal(messages[0].to, 'kade.bechtelar@ethereal.email');
+    assert.match(messages[0].text, /BOARD CHAIR/);
+    assert.equal(messages[1].to, 'incoming@ethereal.email');
+    assert.match(messages[1].text, /\/setup-officer\?token=test-only-token/);
   } finally {
     nodemailer.createTransport = originalCreateTransport;
   }

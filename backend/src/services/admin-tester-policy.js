@@ -1,4 +1,5 @@
 const { getUtcConnection } = require('../config/connection');
+const { ROLE_CODES } = require('../config/roles');
 const { writeAudit } = require('./audit');
 
 async function enforceAdminTesterStartupPolicy(database, {
@@ -8,25 +9,39 @@ async function enforceAdminTesterStartupPolicy(database, {
   const connection = await getUtcConnection(database);
   try {
     const [roleColumns] = await connection.execute(
-      `SELECT COLUMN_TYPE
+      `SELECT COLUMN_NAME, COLUMN_TYPE
        FROM information_schema.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE()
-         AND TABLE_NAME = 'app_users' AND COLUMN_NAME = 'role'`,
+         AND TABLE_NAME = 'app_users'
+         AND COLUMN_NAME IN ('role_code', 'officer_position')`,
     );
-    if (!roleColumns.length || !roleColumns[0].COLUMN_TYPE.includes("'ADMIN_TESTER'")) {
-      throw new Error('Apply database/05_admin_tester_and_officer_mfa.sql before starting the API');
+    const columnTypes = new Map(
+      roleColumns.map((column) => [column.COLUMN_NAME, String(column.COLUMN_TYPE).toLowerCase()]),
+    );
+    if (
+      !columnTypes.has('role_code') ||
+      !columnTypes.has('officer_position') ||
+      columnTypes.get('role_code').startsWith('enum(') ||
+      columnTypes.get('officer_position').startsWith('enum(')
+    ) {
+      throw new Error('Apply database/07_roles_and_role_permissions.sql before starting the API');
     }
+    await connection.execute('SELECT role_code FROM roles LIMIT 0');
+    await connection.execute('SELECT role_code, permission_code FROM role_permissions LIMIT 0');
+    await connection.execute('SELECT actor_role_code, actor_role_label FROM audit_log LIMIT 0');
     await connection.execute(
       `SELECT mfa_enrollment_token_hash, mfa_enrollment_expires_at
        FROM app_users LIMIT 0`,
     );
     await connection.execute('SELECT id FROM admin_invitations LIMIT 0');
+    await connection.execute('SELECT id FROM officer_replacement_requests LIMIT 0');
 
     await connection.beginTransaction();
     const [testers] = await connection.execute(
       `SELECT id FROM app_users
-       WHERE role = 'ADMIN_TESTER' AND active = TRUE
+       WHERE role_code = ? AND active = TRUE
        FOR UPDATE`,
+      [ROLE_CODES.ADMIN_TESTER],
     );
 
     if (testers.length) {
@@ -37,8 +52,8 @@ async function enforceAdminTesterStartupPolicy(database, {
       for (const tester of testers) {
         await connection.execute(
           `UPDATE app_users SET active = FALSE
-           WHERE id = ? AND role = 'ADMIN_TESTER' AND active = TRUE`,
-          [tester.id],
+           WHERE id = ? AND role_code = ? AND active = TRUE`,
+          [tester.id, ROLE_CODES.ADMIN_TESTER],
         );
         await connection.execute(
           `UPDATE app_sessions SET revoked_at = UTC_TIMESTAMP(3)
@@ -50,8 +65,8 @@ async function enforceAdminTesterStartupPolicy(database, {
           action: 'ADMIN_TESTER_DEACTIVATED',
           entityName: 'app_users',
           recordId: tester.id,
-          beforeValue: { role: 'ADMIN_TESTER', active: true },
-          afterValue: { role: 'ADMIN_TESTER', active: false },
+          beforeValue: { roleCode: ROLE_CODES.ADMIN_TESTER, active: true },
+          afterValue: { roleCode: ROLE_CODES.ADMIN_TESTER, active: false },
           reason: 'Production startup safeguard',
         });
       }

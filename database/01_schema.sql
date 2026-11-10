@@ -8,13 +8,52 @@ CREATE DATABASE IF NOT EXISTS enmris
 USE enmris;
 SET time_zone = '+00:00';
 
+CREATE TABLE roles (
+  role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  display_label VARCHAR(120) NOT NULL,
+  is_position BOOLEAN NOT NULL DEFAULT FALSE,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+    ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (role_code)
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO roles (role_code, display_label, is_position) VALUES
+  ('ADMIN', 'Administrator', FALSE),
+  ('ADMIN_TESTER', 'Admin Tester', FALSE),
+  ('OFFICER', 'Officer', FALSE),
+  ('HEAD_OF_IT', 'Head of IT', FALSE),
+  ('BOARD_CHAIR', 'Board Chair', TRUE),
+  ('BOARD_VICE_CHAIR', 'Board Vice Chair', TRUE),
+  ('SYSTEM', 'System', FALSE),
+  ('CLIENT', 'Client', FALSE);
+
+CREATE TABLE role_permissions (
+  role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  permission_code VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  granted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (role_code, permission_code),
+  CONSTRAINT fk_role_permissions_role FOREIGN KEY (role_code)
+    REFERENCES roles (role_code) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO role_permissions (role_code, permission_code) VALUES
+  ('ADMIN', 'invite_admin'),
+  ('ADMIN_TESTER', 'invite_admin'),
+  ('BOARD_CHAIR', 'approve_admin_replacement'),
+  ('BOARD_VICE_CHAIR', 'approve_admin_replacement'),
+  ('HEAD_OF_IT', 'start_replacement'),
+  ('BOARD_CHAIR', 'approve_replacement'),
+  ('BOARD_VICE_CHAIR', 'approve_replacement');
+
 CREATE TABLE app_users (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   name VARCHAR(160) NOT NULL,
   email VARCHAR(254) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
-  role ENUM('ADMIN', 'OFFICER', 'ADMIN_TESTER') NOT NULL,
-  officer_position ENUM('BOARD_CHAIR', 'BOARD_VICE_CHAIR') NULL,
+  role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  officer_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   totp_secret_encrypted VARBINARY(512) NULL,
   totp_last_used_step BIGINT UNSIGNED NULL,
   mfa_enrollment_token_hash BINARY(32) NULL,
@@ -28,8 +67,12 @@ CREATE TABLE app_users (
     UNIQUE KEY uq_app_users_email (email),
     UNIQUE KEY uq_app_users_officer_position (officer_position),
     UNIQUE KEY uq_app_users_mfa_enrollment_token (mfa_enrollment_token_hash),
+    CONSTRAINT fk_app_users_role FOREIGN KEY (role_code)
+      REFERENCES roles (role_code) ON DELETE RESTRICT,
+    CONSTRAINT fk_app_users_officer_position FOREIGN KEY (officer_position)
+      REFERENCES roles (role_code) ON DELETE RESTRICT,
     CONSTRAINT chk_app_users_officer_position CHECK (
-      role = 'OFFICER' OR (role IN ('ADMIN', 'ADMIN_TESTER') AND officer_position IS NULL)
+      role_code = 'OFFICER' OR officer_position IS NULL
     )
 ) ENGINE=InnoDB;
 
@@ -44,7 +87,7 @@ CREATE TABLE admin_invitations (
     ) NOT NULL DEFAULT 'PENDING_APPROVAL',
     approval_expires_at DATETIME(3) NOT NULL,
     decided_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
-    decision_officer_position ENUM('BOARD_CHAIR', 'BOARD_VICE_CHAIR') NULL,
+    decision_officer_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
     decision_reason TEXT NULL,
     decided_at DATETIME(3) NULL,
     setup_token_hash BINARY(32) NULL,
@@ -82,9 +125,85 @@ CREATE TABLE admin_invitations (
       REFERENCES app_users (id) ON DELETE RESTRICT,
     CONSTRAINT fk_admin_invitations_decider FOREIGN KEY (decided_by)
       REFERENCES app_users (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_admin_invitations_decider_position FOREIGN KEY (decision_officer_position)
+      REFERENCES roles (role_code) ON DELETE RESTRICT,
     CONSTRAINT fk_admin_invitations_created_user FOREIGN KEY (created_user_id)
       REFERENCES app_users (id) ON DELETE RESTRICT,
     CONSTRAINT chk_admin_invitations_expiry CHECK (approval_expires_at > created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE officer_replacement_requests (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_type ENUM('HEAD_OF_IT', 'EMERGENCY_BOOTSTRAP') NOT NULL,
+  requested_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  outgoing_officer_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  outgoing_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  continuing_officer_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  incoming_name VARCHAR(160) NOT NULL,
+  incoming_email VARCHAR(254) NOT NULL,
+  status ENUM(
+    'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'SETUP_COMPLETE',
+    'EMERGENCY_SETUP', 'COMPLETED', 'EXPIRED'
+  ) NOT NULL,
+  approval_expires_at DATETIME(3) NULL,
+  decided_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  decision_officer_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  decision_reason TEXT NULL,
+  decided_at DATETIME(3) NULL,
+  setup_token_hash BINARY(32) NULL,
+  setup_token_expires_at DATETIME(3) NULL,
+  setup_token_used_at DATETIME(3) NULL,
+  delivery_status ENUM('NOT_SENT', 'SENT', 'FAILED') NOT NULL DEFAULT 'NOT_SENT',
+  email_sent_at DATETIME(3) NULL,
+  setup_completed_at DATETIME(3) NULL,
+  created_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  test_sign_in_at DATETIME(3) NULL,
+  outgoing_deactivated_at DATETIME(3) NULL,
+  open_position VARCHAR(64) GENERATED ALWAYS AS (
+    CASE
+      WHEN status IN ('PENDING_APPROVAL', 'APPROVED', 'SETUP_COMPLETE', 'EMERGENCY_SETUP')
+        THEN outgoing_position
+      ELSE NULL
+    END
+  ) STORED,
+  open_incoming_email VARCHAR(254) GENERATED ALWAYS AS (
+    CASE
+      WHEN status IN ('PENDING_APPROVAL', 'APPROVED', 'SETUP_COMPLETE', 'EMERGENCY_SETUP')
+        THEN incoming_email
+      ELSE NULL
+    END
+  ) STORED,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_officer_replacements_token_hash (setup_token_hash),
+  UNIQUE KEY uq_officer_replacements_created_user (created_user_id),
+  UNIQUE KEY uq_officer_replacements_open_position (open_position),
+  UNIQUE KEY uq_officer_replacements_open_email (open_incoming_email),
+  KEY ix_officer_replacements_status_expiry (status, approval_expires_at),
+  CONSTRAINT fk_officer_replacements_requester FOREIGN KEY (requested_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_officer_replacements_outgoing FOREIGN KEY (outgoing_officer_user_id)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_officer_replacements_continuing FOREIGN KEY (continuing_officer_user_id)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_officer_replacements_decider FOREIGN KEY (decided_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_officer_replacements_outgoing_position FOREIGN KEY (outgoing_position)
+    REFERENCES roles (role_code) ON DELETE RESTRICT,
+  CONSTRAINT fk_officer_replacements_decision_position FOREIGN KEY (decision_officer_position)
+    REFERENCES roles (role_code) ON DELETE RESTRICT,
+  CONSTRAINT fk_officer_replacements_incoming FOREIGN KEY (created_user_id)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT chk_officer_replacements_authorization CHECK (
+    (request_type = 'HEAD_OF_IT' AND requested_by IS NOT NULL
+      AND continuing_officer_user_id IS NOT NULL AND approval_expires_at IS NOT NULL)
+    OR
+    (request_type = 'EMERGENCY_BOOTSTRAP' AND requested_by IS NULL
+      AND continuing_officer_user_id IS NULL AND approval_expires_at IS NULL)
+  ),
+  CONSTRAINT chk_officer_replacements_expiry CHECK (
+    request_type <> 'HEAD_OF_IT' OR approval_expires_at > created_at
+  )
 ) ENGINE=InnoDB;
 
 CREATE TABLE app_user_permissions (
@@ -478,6 +597,8 @@ CREATE TABLE audit_log (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   actor_type ENUM('USER', 'CLIENT', 'SYSTEM') NOT NULL,
   actor_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  actor_role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  actor_role_label VARCHAR(120) NOT NULL,
   action VARCHAR(100) NOT NULL,
   entity_name VARCHAR(100) NOT NULL,
   record_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -487,6 +608,8 @@ CREATE TABLE audit_log (
   request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
+  CONSTRAINT fk_audit_log_actor_role FOREIGN KEY (actor_role_code)
+    REFERENCES roles (role_code) ON DELETE RESTRICT,
   KEY ix_audit_log_entity_record (entity_name, record_id, created_at),
   KEY ix_audit_log_actor_time (actor_type, actor_id, created_at),
   KEY ix_audit_log_request (request_id)

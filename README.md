@@ -26,28 +26,31 @@ approved for use.
 ## Set up the backend
 
 1. In MySQL Workbench, on a fresh database run `database/01_schema.sql`, then
-   `database/02_seed.sql`. On an existing database, run
-   `database/03_auth_login_attempts.sql` and then
-   `database/04_admin_invitation_workflow.sql` before restarting the updated
-   backend. If the existing database does not already have
-   `auth_login_attempts`, apply `database/03_auth_login_attempts.sql` first;
-   then apply `database/04_admin_invitation_workflow.sql` once, followed by
-   `database/05_admin_tester_and_officer_mfa.sql` once. Migration 05 depends on
-   04. Do not rerun numbered migrations or run the fresh-install schema over
-   an existing DB.
+   `database/02_seed.sql`. On an existing database, apply
+   `database/03_auth_login_attempts.sql` if needed, then apply migrations 04,
+   05, 06, and 07 once and in order before restarting. Migration 05 depends on
+   04, migration 06 depends on 05, and migration 07 depends on 06. Do not rerun
+   numbered migrations or run the fresh-install schema over an existing DB.
    To verify the import, run
    `SELECT COUNT(*) FROM enmris.products;` and
    `SELECT COUNT(*) FROM enmris.product_programmes;` (expected: 19 and 18).
 2. Create a restricted MySQL application account in Workbench. It needs
    `SELECT`/`INSERT` on `app_users`, column-scoped `UPDATE` on
    `app_users.totp_last_used_step` and `app_users.active`,
-   `SELECT`/`INSERT`/`UPDATE` on `app_sessions`, `auth_login_attempts`, and
-   `admin_invitations`, `SELECT` on `app_user_permissions`, and `SELECT`/`INSERT`
-   on `audit_log`. Grant column-scoped `UPDATE` on `app_users` for
+   `SELECT`/`INSERT`/`UPDATE` on `app_sessions`, `auth_login_attempts`,
+   `admin_invitations`, and `officer_replacement_requests`, `SELECT` on
+   `roles`, `role_permissions`, and `app_user_permissions`, and `SELECT`/`INSERT`
+   on `audit_log`. Grant
+   column-scoped `UPDATE` on `app_users` for
    `totp_secret_encrypted`, `totp_last_used_step`, `mfa_enrollment_token_hash`,
-   `mfa_enrollment_expires_at`, `mfa_enabled`, and `active`; do not grant the
-   application account `UPDATE` on `role` or `UPDATE`/`DELETE` on `audit_log`.
+   `mfa_enrollment_expires_at`, `mfa_enabled`, `active`, and `officer_position`;
+   do not grant the application account `UPDATE` on `role_code` or `UPDATE`/`DELETE`
+   on `audit_log`.
    The one-time tester scripts use a separately prompted maintenance account.
+   Stable role codes and action grants are stored in `roles` and
+   `role_permissions`; edit `display_label` for presentation only. The API
+   authorizes by codes and snapshots each actor's role code and current label
+   into `audit_log`.
 3. From `backend`, copy `.env.example` to `.env`, then set the database values
    and `ALLOWED_EMAIL_DOMAINS` to the exact approved email domains (comma
    separated, without wildcards). Configure `SMTP_HOST`, `SMTP_PORT`,
@@ -99,7 +102,8 @@ production requests; configure HTTPS at the reverse proxy as well.
    HttpOnly cookie and is not stored in local storage.
 
 The interface supports staff sign-in, first-sign-in Officer authenticator
-enrollment, session restoration, sign-out, and replacement-Admin request/review screens. If
+enrollment, session restoration, sign-out, and replacement-Admin and Board
+Officer request/review screens. If
 `APP_ORIGIN` is set in `backend/.env`, set it to `http://localhost:5173` for
 local frontend development so cookie-authenticated mutations pass the
 same-origin check.
@@ -169,6 +173,49 @@ at the appropriate stages. No Officer accounts or email messages are created
 until the database migrations are applied, private Ethereal SMTP credentials
 are set, and you run the interactive commands.
 
+## Board Officer replacement
+
+`HEAD_OF_IT` is narrowly scoped: it can start Officer replacement requests but
+cannot administer accounts, approve/reject replacements, or act as an Officer.
+Create it using the interactive trusted bootstrap command; the password is
+hidden at the prompt:
+
+```powershell
+npm run staff:bootstrap -- --role HEAD_OF_IT
+```
+
+For the test scenario, enter Sidney Fisher and
+`sidney62@ethereal.email`. Each Board Officer must enroll an authenticator on
+first sign-in. Head of IT can request replacement of one position at a time,
+naming the incoming person and allowlisted email. The request expires after
+seven days, and email notices go to both current Officers. Only the saved
+continuing Officer may approve or reject it, using a fresh authenticator code
+and providing a reason. Only one uncompleted Officer replacement request may
+be open at a time, keeping that saved approver available. Approval sends a
+single-use, hash-only setup token
+valid for 24 hours. The outgoing Officer remains active until the incoming
+Officer sets a password, enrolls MFA, and completes a successful sign-in; the
+position transfer and outgoing deactivation are committed atomically. The
+continuing Officer can reissue a failed or expired setup link with a reason and
+fresh code.
+
+If there is no continuing Officer who can approve (for example, only one
+active Officer remains), use the local emergency bootstrap instead:
+
+```powershell
+npm run officer:bootstrap -- --emergency-replace
+```
+
+Enter the outgoing Officer's position and incoming details at the prompts.
+The incoming Officer is staged without a position; the outgoing Officer stays
+active until setup and successful sign-in. The emergency action and final
+handover are audited. Never use this command when a continuing Officer is
+available. Existing databases must apply migrations 05, 06, then
+`database/07_roles_and_role_permissions.sql` in order. Grant the
+application account table access to `officer_replacement_requests` and
+column-scoped `UPDATE` on `app_users.officer_position`; retain the no
+`UPDATE`/`DELETE` restriction on `audit_log`.
+
 ## Troubleshoot MySQL `ER_ACCESS_DENIED_ERROR`
 
 In MySQL Workbench, check whether the configured application login exists:
@@ -190,7 +237,10 @@ CREATE USER 'eNMRIS'@'127.0.0.1'
 
 GRANT SELECT, INSERT ON enmris.app_users
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
-GRANT UPDATE (totp_last_used_step, active) ON enmris.app_users
+GRANT UPDATE (
+  totp_secret_encrypted, totp_last_used_step, mfa_enrollment_token_hash,
+  mfa_enrollment_expires_at, mfa_enabled, active, officer_position
+) ON enmris.app_users
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE ON enmris.app_sessions
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
@@ -198,7 +248,13 @@ GRANT SELECT, INSERT, UPDATE ON enmris.auth_login_attempts
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE ON enmris.admin_invitations
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE ON enmris.officer_replacement_requests
+  TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT ON enmris.app_user_permissions
+  TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
+GRANT SELECT ON enmris.roles
+  TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
+GRANT SELECT ON enmris.role_permissions
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT, INSERT ON enmris.audit_log
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';

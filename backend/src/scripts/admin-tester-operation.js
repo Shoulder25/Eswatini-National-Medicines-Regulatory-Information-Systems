@@ -6,6 +6,7 @@ const mysql = require('mysql2/promise');
 const { getUtcConnection } = require('../config/connection');
 const { readHidden } = require('./prompt');
 const { writeAudit } = require('../services/audit');
+const { ROLE_CODES } = require('../config/roles');
 
 function requiredEnv(name) {
   const value = process.env[name];
@@ -56,11 +57,11 @@ async function verifyReplacementAdmin(connection, email, excludedUserId = null) 
        ON i.created_user_id = u.id
       AND i.status = 'COMPLETED'
       AND i.test_sign_in_at IS NOT NULL
-     WHERE u.email = ? AND u.role = 'ADMIN' AND u.active = TRUE
+     WHERE u.email = ? AND u.role_code = ? AND u.active = TRUE
        AND u.mfa_enabled = TRUE
        AND (? IS NULL OR u.id <> ?)
      FOR UPDATE`,
-    [email, excludedUserId, excludedUserId],
+    [email, ROLE_CODES.ADMIN, excludedUserId, excludedUserId],
   );
   if (!admins.length) {
     throw new Error('The named replacement Admin must be active, MFA-enrolled, and have a completed test sign-in');
@@ -72,7 +73,7 @@ async function performOperation(connection, operation, input) {
   await connection.beginTransaction();
   try {
     const [users] = await connection.execute(
-      `SELECT id, email, role, active, mfa_enabled
+      `SELECT id, email, role_code, active, mfa_enabled
        FROM app_users WHERE email = ? LIMIT 1 FOR UPDATE`,
       [input.targetEmail],
     );
@@ -82,7 +83,7 @@ async function performOperation(connection, operation, input) {
     }
 
     if (operation === 'convert') {
-      if (target.role !== 'ADMIN' || !target.mfa_enabled) {
+      if (target.role_code !== ROLE_CODES.ADMIN || !target.mfa_enabled) {
         throw new Error('Only an active, MFA-enrolled ADMIN can be converted');
       }
       const replacement = await verifyReplacementAdmin(
@@ -92,27 +93,27 @@ async function performOperation(connection, operation, input) {
       );
       const [otherAdmins] = await connection.execute(
         `SELECT id FROM app_users
-         WHERE role = 'ADMIN' AND active = TRUE AND id <> ?
+         WHERE role_code = ? AND active = TRUE AND id <> ?
          FOR UPDATE`,
-        [target.id],
+        [ROLE_CODES.ADMIN, target.id],
       );
       if (otherAdmins.length !== 1 || otherAdmins[0].id !== replacement.id) {
         throw new Error('Conversion requires the verified replacement to be the only other active ADMIN');
       }
       await connection.execute(
-        `UPDATE app_users SET role = 'ADMIN_TESTER'
-         WHERE id = ? AND role = 'ADMIN' AND active = TRUE`,
-        [target.id],
+        `UPDATE app_users SET role_code = ?
+         WHERE id = ? AND role_code = ? AND active = TRUE`,
+        [ROLE_CODES.ADMIN_TESTER, target.id, ROLE_CODES.ADMIN],
       );
       await writeAudit(connection, {
         actorType: 'SYSTEM',
         action: 'ADMIN_TESTER_CONVERTED',
         entityName: 'app_users',
         recordId: target.id,
-        beforeValue: { email: target.email, role: 'ADMIN', active: true },
+        beforeValue: { email: target.email, roleCode: ROLE_CODES.ADMIN, active: true },
         afterValue: {
           email: target.email,
-          role: 'ADMIN_TESTER',
+          roleCode: ROLE_CODES.ADMIN_TESTER,
           active: true,
           replacementAdminId: replacement.id,
           credentialsPreserved: true,
@@ -120,7 +121,7 @@ async function performOperation(connection, operation, input) {
         reason: `${input.reason}; authorized by ${input.operator}`,
       });
     } else {
-      if (target.role !== 'ADMIN_TESTER') {
+      if (target.role_code !== ROLE_CODES.ADMIN_TESTER) {
         throw new Error('Only an active ADMIN_TESTER can be deactivated');
       }
       const replacement = await verifyReplacementAdmin(
@@ -130,16 +131,17 @@ async function performOperation(connection, operation, input) {
       );
       const [admins] = await connection.execute(
         `SELECT id FROM app_users
-         WHERE role = 'ADMIN' AND active = TRUE
+         WHERE role_code = ? AND active = TRUE
          FOR UPDATE`,
+        [ROLE_CODES.ADMIN],
       );
       if (admins.length !== 1 || admins[0].id !== replacement.id) {
         throw new Error('Cleanup requires the named replacement to be the only active ADMIN');
       }
       await connection.execute(
         `UPDATE app_users SET active = FALSE
-         WHERE id = ? AND role = 'ADMIN_TESTER' AND active = TRUE`,
-        [target.id],
+         WHERE id = ? AND role_code = ? AND active = TRUE`,
+        [target.id, ROLE_CODES.ADMIN_TESTER],
       );
       await connection.execute(
         `UPDATE app_sessions SET revoked_at = UTC_TIMESTAMP(3)
@@ -151,10 +153,10 @@ async function performOperation(connection, operation, input) {
         action: 'ADMIN_TESTER_DEACTIVATED_MANUAL',
         entityName: 'app_users',
         recordId: target.id,
-        beforeValue: { email: target.email, role: 'ADMIN_TESTER', active: true },
+        beforeValue: { email: target.email, roleCode: ROLE_CODES.ADMIN_TESTER, active: true },
         afterValue: {
           email: target.email,
-          role: 'ADMIN_TESTER',
+          roleCode: ROLE_CODES.ADMIN_TESTER,
           active: false,
           remainingAdminId: replacement.id,
         },

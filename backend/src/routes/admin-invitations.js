@@ -1,8 +1,13 @@
 const crypto = require('node:crypto');
 const express = require('express');
 const { getUtcConnection } = require('../config/connection');
-const { requireBoardOfficer, requireRole } = require('../middleware/authorization');
+const { requirePermission } = require('../middleware/authorization');
 const { requireSameOrigin } = require('../middleware/csrf');
+const {
+  BOARD_POSITION_CODES,
+  PERMISSION_CODES,
+  ROLE_CODES,
+} = require('../config/roles');
 const {
   decryptTotpSecret,
   encryptTotpSecret,
@@ -203,24 +208,30 @@ function createAdminInvitationRouter({
   const router = express.Router();
 
   router.get('/', authenticate, async (req, res, next) => {
+    const mayReview = req.user.permissions.includes(PERMISSION_CODES.APPROVE_ADMIN_REPLACEMENT);
+    const mayInvite = req.user.permissions.includes(PERMISSION_CODES.INVITE_ADMIN);
+    if (!mayReview && !mayInvite) {
+      return respondError(res, req, 403, 'FORBIDDEN', 'Caller lacks Admin replacement access');
+    }
     let connection;
     try {
       connection = await getUtcConnection(database);
       await connection.beginTransaction();
       await expirePendingInvitations(connection, req.user.id, req.requestId);
 
-      const officer = req.user.role === 'OFFICER' &&
-        ['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(req.user.officerPosition);
       const [rows] = await connection.execute(
-        `SELECT id, invited_by, replaces_admin_user_id, invitee_name, invitee_email,
-                status, approval_expires_at, decided_by, decision_officer_position,
-                decision_reason, decided_at, delivery_status, email_sent_at,
-                setup_token_expires_at, setup_completed_at, created_user_id,
-                test_sign_in_at, replaced_admin_deactivated_at, created_at
-         FROM admin_invitations
-         WHERE ${officer ? '1 = 1' : 'invited_by = ?'}
-         ORDER BY created_at DESC LIMIT 100`,
-        officer ? [] : [req.user.id],
+        `SELECT i.id, i.invited_by, i.replaces_admin_user_id, i.invitee_name, i.invitee_email,
+                i.status, i.approval_expires_at, i.decided_by, i.decision_officer_position,
+                decision_role.display_label AS decision_officer_position_label,
+                i.decision_reason, i.decided_at, i.delivery_status, i.email_sent_at,
+                i.setup_token_expires_at, i.setup_completed_at, i.created_user_id,
+                i.test_sign_in_at, i.replaced_admin_deactivated_at, i.created_at
+         FROM admin_invitations i
+         LEFT JOIN roles decision_role
+           ON decision_role.role_code = i.decision_officer_position
+         WHERE ${mayReview ? '1 = 1' : 'i.invited_by = ?'}
+         ORDER BY i.created_at DESC LIMIT 100`,
+        mayReview ? [] : [req.user.id],
       );
       await connection.commit();
       return res.status(200).json({ data: rows });
@@ -232,7 +243,12 @@ function createAdminInvitationRouter({
     }
   });
 
-  router.post('/', authenticate, requireSameOrigin, requireRole('ADMIN'), async (req, res, next) => {
+  router.post(
+    '/',
+    authenticate,
+    requireSameOrigin,
+    requirePermission(PERMISSION_CODES.INVITE_ADMIN),
+    async (req, res, next) => {
     const { name, email: address } = req.body || {};
     const email = validateEmailAddress(address);
     if (!email.valid) {
@@ -242,7 +258,8 @@ function createAdminInvitationRouter({
           reason: email.reason,
           actorId: req.user.id,
           requestId: req.requestId,
-        });
+          },
+        );
       } catch (error) {
         return next(error);
       }
@@ -293,7 +310,7 @@ function createAdminInvitationRouter({
           action: 'ADMIN_INVITE_REJECTED',
           entityName: 'admin_invitations',
           afterValue: {
-            actorRole: req.user.role,
+            actorRoleCode: req.user.role,
             inviteeEmail: email.email,
             reason: existingUsers.length
               ? 'ACCOUNT_ALREADY_EXISTS'
@@ -330,7 +347,7 @@ function createAdminInvitationRouter({
         entityName: 'admin_invitations',
         recordId: invitationId,
         afterValue: {
-          actorRole: req.user.role,
+          actorRoleCode: req.user.role,
           inviteeName: name.trim(),
           inviteeEmail: email.email,
           status: 'PENDING_APPROVAL',
@@ -358,7 +375,12 @@ function createAdminInvitationRouter({
     }
   });
 
-  router.post('/:id/decision', authenticate, requireSameOrigin, requireBoardOfficer, async (req, res, next) => {
+  router.post(
+    '/:id/decision',
+    authenticate,
+    requireSameOrigin,
+    requirePermission(PERMISSION_CODES.APPROVE_ADMIN_REPLACEMENT),
+    async (req, res, next) => {
     const { decision, reason, totpCode } = req.body || {};
     if (
       !validUuid(req.params.id) ||
@@ -376,7 +398,7 @@ function createAdminInvitationRouter({
       connection = await getUtcConnection(database);
       await connection.beginTransaction();
       const [officers] = await connection.execute(
-        `SELECT id, role, officer_position, email, totp_secret_encrypted,
+        `SELECT id, role_code AS role, officer_position, email, totp_secret_encrypted,
                 totp_last_used_step, mfa_enabled
          FROM app_users WHERE id = ? AND active = TRUE FOR UPDATE`,
         [req.user.id],
@@ -384,8 +406,8 @@ function createAdminInvitationRouter({
       const officer = officers[0];
       if (
         !officer ||
-        officer.role !== 'OFFICER' ||
-        !['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(officer.officer_position)
+        officer.role !== ROLE_CODES.OFFICER ||
+        !BOARD_POSITION_CODES.includes(officer.officer_position)
       ) {
         await connection.rollback();
         return respondError(res, req, 403, 'FORBIDDEN', 'An active Board Officer account is required');
@@ -436,7 +458,7 @@ function createAdminInvitationRouter({
           action: 'ADMIN_INVITE_SELF_APPROVAL_BLOCKED',
           entityName: 'admin_invitations',
           recordId: invitation.id,
-          afterValue: { actorRole: officer.role, officerPosition: officer.officer_position },
+          afterValue: { actorRoleCode: officer.role, officerPosition: officer.officer_position },
           reason: 'Officer cannot approve an invitation they initiated or an appointment for themselves',
           requestId: req.requestId,
         });
@@ -451,7 +473,7 @@ function createAdminInvitationRouter({
           action: 'ADMIN_INVITE_DECISION_AUTH_FAILED',
           entityName: 'admin_invitations',
           recordId: invitation.id,
-          afterValue: { actorRole: officer.role, officerPosition: officer.officer_position },
+          afterValue: { actorRoleCode: officer.role, officerPosition: officer.officer_position },
           reason: 'Fresh authenticator code was invalid or already used',
           requestId: req.requestId,
         });
@@ -474,7 +496,7 @@ function createAdminInvitationRouter({
           recordId: invitation.id,
           afterValue: {
             status: 'REJECTED',
-            actorRole: officer.role,
+            actorRoleCode: officer.role,
             officerPosition: officer.officer_position,
             inviteeEmail: invitation.invitee_email,
           },
@@ -504,7 +526,7 @@ function createAdminInvitationRouter({
         recordId: invitation.id,
         afterValue: {
           status: 'APPROVED',
-          actorRole: officer.role,
+          actorRoleCode: officer.role,
           officerPosition: officer.officer_position,
           inviteeEmail: invitation.invitee_email,
         },
@@ -518,7 +540,7 @@ function createAdminInvitationRouter({
         recordId: invitation.id,
         afterValue: {
           expiresInHours: SETUP_TOKEN_HOURS,
-          actorRole: officer.role,
+          actorRoleCode: officer.role,
           officerPosition: officer.officer_position,
         },
         requestId: req.requestId,
@@ -538,7 +560,7 @@ function createAdminInvitationRouter({
         invitation: approvedInvitation,
         token: setupToken,
         actorId: req.user.id,
-        actorRole: req.user.role,
+        actorRoleCode: req.user.role,
         requestId: req.requestId,
         sendEmail,
       });
@@ -555,9 +577,15 @@ function createAdminInvitationRouter({
           : 'Invitation approved, but email delivery failed; the approving Officer may reissue the setup link',
       },
     });
-  });
+    },
+  );
 
-  router.post('/:id/reissue', authenticate, requireSameOrigin, requireBoardOfficer, async (req, res, next) => {
+  router.post(
+    '/:id/reissue',
+    authenticate,
+    requireSameOrigin,
+    requirePermission(PERMISSION_CODES.APPROVE_ADMIN_REPLACEMENT),
+    async (req, res, next) => {
     const { reason, totpCode } = req.body || {};
     if (
       !validUuid(req.params.id) ||
@@ -574,7 +602,7 @@ function createAdminInvitationRouter({
       connection = await getUtcConnection(database);
       await connection.beginTransaction();
       const [officers] = await connection.execute(
-        `SELECT id, role, officer_position, totp_secret_encrypted,
+        `SELECT id, role_code AS role, officer_position, totp_secret_encrypted,
                 totp_last_used_step, mfa_enabled
          FROM app_users WHERE id = ? AND active = TRUE FOR UPDATE`,
         [req.user.id],
@@ -582,8 +610,8 @@ function createAdminInvitationRouter({
       const officer = officers[0];
       if (
         !officer ||
-        officer.role !== 'OFFICER' ||
-        !['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(officer.officer_position)
+        officer.role !== ROLE_CODES.OFFICER ||
+        !BOARD_POSITION_CODES.includes(officer.officer_position)
       ) {
         await connection.rollback();
         return respondError(res, req, 403, 'FORBIDDEN', 'An active Board Officer account is required');
@@ -615,10 +643,11 @@ function createAdminInvitationRouter({
           action: 'ADMIN_SETUP_LINK_REISSUE_AUTH_FAILED',
           entityName: 'admin_invitations',
           recordId: invitation.id,
-          afterValue: { actorRole: officer.role, officerPosition: officer.officer_position },
+          afterValue: { actorRoleCode: officer.role, officerPosition: officer.officer_position },
           reason: 'Fresh authenticator code was invalid or already used',
           requestId: req.requestId,
-        });
+          },
+        );
         await connection.commit();
         return respondError(res, req, 401, 'FRESH_AUTHENTICATOR_REQUIRED', 'Enter a fresh current authenticator code');
       }
@@ -639,7 +668,7 @@ function createAdminInvitationRouter({
         recordId: invitation.id,
         afterValue: {
           expiresInHours: SETUP_TOKEN_HOURS,
-          actorRole: officer.role,
+          actorRoleCode: officer.role,
           officerPosition: officer.officer_position,
         },
         reason: reason.trim(),
@@ -652,7 +681,7 @@ function createAdminInvitationRouter({
         recordId: invitation.id,
         afterValue: {
           expiresInHours: SETUP_TOKEN_HOURS,
-          actorRole: officer.role,
+          actorRoleCode: officer.role,
           officerPosition: officer.officer_position,
         },
         requestId: req.requestId,
@@ -671,7 +700,7 @@ function createAdminInvitationRouter({
         invitation,
         token: setupToken,
         actorId: req.user.id,
-        actorRole: req.user.role,
+        actorRoleCode: req.user.role,
         requestId: req.requestId,
         sendEmail,
       });
@@ -795,14 +824,15 @@ function createAdminInvitationRouter({
       const userId = crypto.randomUUID();
       await connection.execute(
         `INSERT INTO app_users
-           (id, name, email, password_hash, role, officer_position,
+           (id, name, email, password_hash, role_code, officer_position,
             totp_secret_encrypted, totp_last_used_step, mfa_enabled, active)
-         VALUES (?, ?, ?, ?, 'ADMIN', NULL, ?, ?, TRUE, TRUE)`,
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, TRUE, TRUE)`,
         [
           userId,
           invitation.invitee_name,
           email.email,
           await hashPassword(password),
+          ROLE_CODES.ADMIN,
           encryptTotpSecret(totpSecret, process.env.AUTH_ENCRYPTION_KEY),
           codeStep,
         ],
@@ -820,7 +850,7 @@ function createAdminInvitationRouter({
         action: 'ADMIN_SETUP_TOKEN_USED',
         entityName: 'admin_invitations',
         recordId: invitation.id,
-        afterValue: { inviteeEmail: email.email, actorRole: 'ADMIN' },
+        afterValue: { inviteeEmail: email.email, actorRoleCode: ROLE_CODES.ADMIN },
         requestId: req.requestId,
       });
       await writeAudit(connection, {
@@ -828,7 +858,12 @@ function createAdminInvitationRouter({
         action: 'ADMIN_ACCOUNT_ENROLLED',
         entityName: 'app_users',
         recordId: userId,
-        afterValue: { email: email.email, role: 'ADMIN', mfaEnabled: true, actorRole: 'ADMIN' },
+        afterValue: {
+          email: email.email,
+          roleCode: ROLE_CODES.ADMIN,
+          mfaEnabled: true,
+          actorRoleCode: ROLE_CODES.ADMIN,
+        },
         reason: 'Approved invitation setup completed; first successful sign-in is required before replacement',
         requestId: req.requestId,
       });

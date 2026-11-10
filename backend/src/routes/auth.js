@@ -3,7 +3,13 @@ const express = require('express');
 const { getUtcConnection } = require('../config/connection');
 const { createSessionMiddleware } = require('../middleware/session');
 const { originIsAllowed } = require('../middleware/csrf');
+const {
+  BOARD_POSITION_CODES,
+  REPLACEMENT_REQUEST_TYPES,
+  ROLE_CODES,
+} = require('../config/roles');
 const { writeAudit } = require('../services/audit');
+const { getEffectivePermissions } = require('../services/permissions');
 const {
   createLoginBucket,
   decodeKey,
@@ -35,6 +41,122 @@ function errorResponse(res, req, status, code, message, retryAfter) {
 
 function sessionCookie(token, secure) {
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=${IDLE_TIMEOUT_MINUTES * 60}${secure ? '; Secure' : ''}`;
+}
+
+async function completeOfficerReplacement(connection, user, requestId) {
+  const [officerReplacements] = await connection.execute(
+    `SELECT id, request_type, outgoing_officer_user_id, outgoing_position,
+            continuing_officer_user_id
+     FROM officer_replacement_requests
+     WHERE created_user_id = ? AND status IN ('SETUP_COMPLETE', 'EMERGENCY_SETUP')
+       AND test_sign_in_at IS NULL
+     FOR UPDATE`,
+    [user.id],
+  );
+  const replacement = officerReplacements[0];
+  if (!replacement) return;
+
+  const [activeOfficers] = await connection.execute(
+    `SELECT id, officer_position FROM app_users
+     WHERE role_code = ? AND active = TRUE
+     FOR UPDATE`,
+    [ROLE_CODES.OFFICER],
+  );
+  const outgoing = activeOfficers.find(
+    (officer) => officer.id === replacement.outgoing_officer_user_id,
+  );
+  const incoming = activeOfficers.find((officer) => officer.id === user.id);
+  const continuing = replacement.continuing_officer_user_id
+    ? activeOfficers.find(
+      (officer) => officer.id === replacement.continuing_officer_user_id,
+    )
+    : null;
+  if (
+    !outgoing ||
+    outgoing.officer_position !== replacement.outgoing_position ||
+    !incoming ||
+    incoming.officer_position !== null ||
+    (replacement.request_type === REPLACEMENT_REQUEST_TYPES.HEAD_OF_IT &&
+      (!continuing || continuing.id === outgoing.id || continuing.id === incoming.id ||
+        continuing.officer_position === replacement.outgoing_position)) ||
+    activeOfficers.filter((officer) => officer.id !== outgoing.id).length < 1
+  ) {
+    throw new Error('Officer replacement cannot complete without preserving an active Officer');
+  }
+
+  const [deactivated] = await connection.execute(
+    `UPDATE app_users
+     SET active = FALSE, officer_position = NULL
+     WHERE id = ? AND role_code = ? AND active = TRUE AND officer_position = ?`,
+    [outgoing.id, ROLE_CODES.OFFICER, replacement.outgoing_position],
+  );
+  if (deactivated.affectedRows !== 1) {
+    throw new Error('Outgoing Officer was not active at the expected position');
+  }
+  await connection.execute(
+    `UPDATE app_sessions SET revoked_at = UTC_TIMESTAMP(3)
+     WHERE user_id = ? AND revoked_at IS NULL`,
+    [outgoing.id],
+  );
+  const [positionAssigned] = await connection.execute(
+    `UPDATE app_users
+     SET officer_position = ?
+     WHERE id = ? AND role_code = ? AND active = TRUE AND officer_position IS NULL`,
+    [replacement.outgoing_position, incoming.id, ROLE_CODES.OFFICER],
+  );
+  if (positionAssigned.affectedRows !== 1) {
+    throw new Error('Incoming Officer could not be assigned the vacated position');
+  }
+  const [positionRoles] = await connection.execute(
+    'SELECT display_label FROM roles WHERE role_code = ?',
+    [replacement.outgoing_position],
+  );
+  await connection.execute(
+    `UPDATE officer_replacement_requests
+     SET status = 'COMPLETED', test_sign_in_at = UTC_TIMESTAMP(3),
+         outgoing_deactivated_at = UTC_TIMESTAMP(3)
+     WHERE id = ?`,
+    [replacement.id],
+  );
+  await writeAudit(connection, {
+    actorId: user.id,
+    action: 'OFFICER_REPLACEMENT_OUTGOING_DEACTIVATED',
+    entityName: 'app_users',
+    recordId: outgoing.id,
+    beforeValue: {
+      roleCode: ROLE_CODES.OFFICER,
+      officerPosition: replacement.outgoing_position,
+      active: true,
+    },
+    afterValue: {
+      roleCode: ROLE_CODES.OFFICER,
+      officerPosition: null,
+      active: false,
+      replacementOfficerId: user.id,
+      actorRoleCode: user.role_code,
+    },
+    reason: 'Incoming Officer completed authenticator enrollment and successful test sign-in',
+    requestId,
+  });
+  await writeAudit(connection, {
+    actorId: user.id,
+    action: replacement.request_type === REPLACEMENT_REQUEST_TYPES.EMERGENCY_BOOTSTRAP
+      ? 'OFFICER_REPLACEMENT_EMERGENCY_COMPLETED'
+      : 'OFFICER_REPLACEMENT_COMPLETED',
+    entityName: 'officer_replacement_requests',
+    recordId: replacement.id,
+    afterValue: {
+      incomingOfficerId: user.id,
+      outgoingOfficerId: outgoing.id,
+      outgoingPosition: replacement.outgoing_position,
+      continuingOfficerId: continuing?.id || null,
+      actorRoleCode: user.role_code,
+      emergency: replacement.request_type === REPLACEMENT_REQUEST_TYPES.EMERGENCY_BOOTSTRAP,
+    },
+    requestId,
+  });
+  user.officer_position = replacement.outgoing_position;
+  user.officer_position_label = positionRoles[0]?.display_label;
 }
 
 function createAuthRouter({ database }) {
@@ -109,9 +231,15 @@ function createAuthRouter({ database }) {
       }
 
       const [users] = await connection.execute(
-        `SELECT id, name, email, password_hash, role, officer_position,
-                totp_secret_encrypted, totp_last_used_step, mfa_enabled
-         FROM app_users WHERE email = ? AND active = TRUE LIMIT 1 FOR UPDATE`,
+        `SELECT u.id, u.name, u.email, u.password_hash,
+                u.role_code AS role, u.role_code,
+                account_role.display_label AS role_label, u.officer_position,
+                position_role.display_label AS officer_position_label,
+                u.totp_secret_encrypted, u.totp_last_used_step, u.mfa_enabled
+         FROM app_users u
+         JOIN roles account_role ON account_role.role_code = u.role_code
+         LEFT JOIN roles position_role ON position_role.role_code = u.officer_position
+         WHERE u.email = ? AND u.active = TRUE LIMIT 1 FOR UPDATE`,
         [email.trim()],
       );
       const user = users[0];
@@ -119,10 +247,17 @@ function createAuthRouter({ database }) {
         password,
         user ? user.password_hash : await dummyPasswordHash,
       );
-      if (user && user.role === 'ADMIN_TESTER' && production && passwordMatches) {
+      const permissions = user && passwordMatches
+        ? await getEffectivePermissions(connection, {
+          userId: user.id,
+          roleCode: user.role_code,
+          positionCode: user.officer_position,
+        })
+        : [];
+      if (user && user.role === ROLE_CODES.ADMIN_TESTER && production && passwordMatches) {
         await connection.execute(
-          `UPDATE app_users SET active = FALSE WHERE id = ? AND role = 'ADMIN_TESTER'`,
-          [user.id],
+          `UPDATE app_users SET active = FALSE WHERE id = ? AND role_code = ?`,
+          [user.id, ROLE_CODES.ADMIN_TESTER],
         );
         await connection.execute(
           `UPDATE app_sessions SET revoked_at = UTC_TIMESTAMP(3)
@@ -134,8 +269,8 @@ function createAuthRouter({ database }) {
           action: 'ADMIN_TESTER_DEACTIVATED',
           entityName: 'app_users',
           recordId: user.id,
-          beforeValue: { role: 'ADMIN_TESTER', active: true },
-          afterValue: { role: 'ADMIN_TESTER', active: false },
+          beforeValue: { roleCode: ROLE_CODES.ADMIN_TESTER, active: true },
+          afterValue: { roleCode: ROLE_CODES.ADMIN_TESTER, active: false },
           reason: 'Production login safeguard',
           requestId: req.requestId,
         });
@@ -146,8 +281,7 @@ function createAuthRouter({ database }) {
       if (
         user &&
         passwordMatches &&
-        user.role === 'OFFICER' &&
-        ['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(user.officer_position) &&
+        permissions.length > 0 &&
         !user.mfa_enabled &&
         !user.totp_secret_encrypted
       ) {
@@ -170,7 +304,7 @@ function createAuthRouter({ database }) {
           entityName: 'app_users',
           recordId: user.id,
           afterValue: {
-            actorRole: user.role,
+            actorRoleCode: user.role_code,
             officerPosition: user.officer_position,
             expiresInMinutes: MFA_ENROLLMENT_TIMEOUT_MINUTES,
           },
@@ -187,7 +321,10 @@ function createAuthRouter({ database }) {
               name: user.name,
               email: user.email,
               role: user.role,
+              roleCode: user.role_code,
+              roleLabel: user.role_label,
               officerPosition: user.officer_position,
+              officerPositionLabel: user.officer_position_label,
             },
           },
         });
@@ -247,11 +384,6 @@ function createAuthRouter({ database }) {
          WHERE bucket_hash = ?`,
         [bucketHash],
       );
-      const [permissionRows] = await connection.execute(
-        `SELECT permission_code FROM app_user_permissions
-         WHERE user_id = ? AND revoked_at IS NULL ORDER BY permission_code`,
-        [user.id],
-      );
       const [replacementInvitations] = await connection.execute(
         `SELECT id, replaces_admin_user_id FROM admin_invitations
          WHERE created_user_id = ? AND status = 'SETUP_COMPLETE'
@@ -274,7 +406,7 @@ function createAuthRouter({ database }) {
           recordId: replacement.id,
           afterValue: {
             replacementAdminId: user.id,
-            actorRole: user.role,
+            actorRoleCode: user.role_code,
             officerPosition: user.officer_position,
             replacedAdminDeactivated: false,
             previousAdminPreserved: true,
@@ -283,12 +415,15 @@ function createAuthRouter({ database }) {
           requestId: req.requestId,
         });
       }
+
+      await completeOfficerReplacement(connection, user, req.requestId);
+
       await writeAudit(connection, {
         actorId: user.id,
         action: 'LOGIN_SUCCEEDED',
         entityName: 'app_sessions',
         recordId: sessionId,
-        afterValue: { actorRole: user.role },
+        afterValue: { actorRoleCode: user.role_code },
         requestId: req.requestId,
       });
       await connection.commit();
@@ -300,8 +435,11 @@ function createAuthRouter({ database }) {
             name: user.name,
             email: user.email,
             role: user.role,
+            roleCode: user.role_code,
+            roleLabel: user.role_label,
             officerPosition: user.officer_position,
-            permissions: permissionRows.map((row) => row.permission_code),
+            officerPositionLabel: user.officer_position_label,
+            permissions,
           },
           idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES,
         },
@@ -347,20 +485,27 @@ function createAuthRouter({ database }) {
       connection = await getUtcConnection(database);
       await connection.beginTransaction();
       const [users] = await connection.execute(
-        `SELECT id, name, email, role, officer_position, mfa_enabled
-         FROM app_users
-         WHERE mfa_enrollment_token_hash = ?
-           AND mfa_enrollment_expires_at > UTC_TIMESTAMP(3)
-           AND active = TRUE AND mfa_enabled = FALSE
+        `SELECT u.id, u.name, u.email, u.role_code AS role, u.role_code,
+                account_role.display_label AS role_label, u.officer_position,
+                position_role.display_label AS officer_position_label, u.mfa_enabled
+         FROM app_users u
+         JOIN roles account_role ON account_role.role_code = u.role_code
+         LEFT JOIN roles position_role ON position_role.role_code = u.officer_position
+         WHERE u.mfa_enrollment_token_hash = ?
+           AND u.mfa_enrollment_expires_at > UTC_TIMESTAMP(3)
+           AND u.active = TRUE AND u.mfa_enabled = FALSE
          LIMIT 1 FOR UPDATE`,
         [hashSessionToken(enrollmentToken)],
       );
       const user = users[0];
-      if (
-        !user ||
-        user.role !== 'OFFICER' ||
-        !['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(user.officer_position)
-      ) {
+      const permissions = user
+        ? await getEffectivePermissions(connection, {
+          userId: user.id,
+          roleCode: user.role_code,
+          positionCode: user.officer_position,
+        })
+        : [];
+      if (!user || permissions.length === 0) {
         await connection.rollback();
         return errorResponse(res, req, 400, 'INVALID_MFA_ENROLLMENT', 'The authenticator enrollment is invalid or expired');
       }
@@ -430,6 +575,7 @@ function createAuthRouter({ database }) {
           user.id,
         ],
       );
+      await completeOfficerReplacement(connection, user, req.requestId);
       const sessionToken = crypto.randomBytes(32).toString('base64url');
       const sessionId = crypto.randomUUID();
       await connection.execute(
@@ -442,18 +588,13 @@ function createAuthRouter({ database }) {
          WHERE bucket_hash = ?`,
         [bucketHash],
       );
-      const [permissionRows] = await connection.execute(
-        `SELECT permission_code FROM app_user_permissions
-         WHERE user_id = ? AND revoked_at IS NULL ORDER BY permission_code`,
-        [user.id],
-      );
       await writeAudit(connection, {
         actorId: user.id,
         action: 'MFA_ENROLLMENT_COMPLETED',
         entityName: 'app_users',
         recordId: user.id,
         afterValue: {
-          actorRole: user.role,
+          actorRoleCode: user.role_code,
           officerPosition: user.officer_position,
           mfaEnabled: true,
         },
@@ -464,7 +605,7 @@ function createAuthRouter({ database }) {
         action: 'LOGIN_SUCCEEDED',
         entityName: 'app_sessions',
         recordId: sessionId,
-        afterValue: { actorRole: user.role },
+        afterValue: { actorRoleCode: user.role_code },
         reason: 'First sign-in completed with authenticator enrollment',
         requestId: req.requestId,
       });
@@ -477,8 +618,11 @@ function createAuthRouter({ database }) {
             name: user.name,
             email: user.email,
             role: user.role,
+            roleCode: user.role_code,
+            roleLabel: user.role_label,
             officerPosition: user.officer_position,
-            permissions: permissionRows.map((row) => row.permission_code),
+            officerPositionLabel: user.officer_position_label,
+            permissions,
           },
           idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES,
         },

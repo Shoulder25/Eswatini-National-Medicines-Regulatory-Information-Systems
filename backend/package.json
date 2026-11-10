@@ -9,6 +9,7 @@
     "dev": "node --watch src/server.js",
     "admin:create": "node src/scripts/create-admin.js",
     "officer:bootstrap": "node src/scripts/bootstrap-officer.js",
+    "staff:bootstrap": "node src/scripts/bootstrap-officer.js",
     "admin-tester:convert": "node src/scripts/convert-admin-tester.js",
     "admin-tester:deactivate": "node src/scripts/deactivate-admin-tester.js",
     "test": "node --test"

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { enforceAdminTesterStartupPolicy } = require('../src/services/admin-tester-policy');
 
-function createDatabase() {
+function createDatabase(roleType = 'varchar(64)') {
   const statements = [];
   const connection = {
     async query() {},
@@ -13,10 +13,17 @@ function createDatabase() {
     async execute(sql, values = []) {
       statements.push({ sql, values });
       if (sql.includes('information_schema.COLUMNS')) {
-        return [[{ COLUMN_TYPE: "enum('ADMIN','OFFICER','ADMIN_TESTER')" }], []];
+        return [[
+          { COLUMN_NAME: 'role_code', COLUMN_TYPE: roleType },
+          { COLUMN_NAME: 'officer_position', COLUMN_TYPE: 'varchar(64)' },
+        ], []];
       }
-      if (sql.includes('WHERE role = \'ADMIN_TESTER\'')) {
+      if (sql.includes('LIMIT 0')) return [[], []];
+      if (sql.includes('WHERE role_code = ?')) {
         return [[{ id: '36a5f4b4-034d-4c79-8cf4-8e196613eb3a' }], []];
+      }
+      if (sql.includes('SELECT display_label FROM roles')) {
+        return [[{ display_label: 'System' }], []];
       }
       return [{ affectedRows: 1 }, []];
     },
@@ -58,4 +65,13 @@ test('non-production startup warns about active testers without disabling them',
   assert.deepEqual(result, { found: 1, deactivated: 0 });
   assert.equal(warnings.length, 1);
   assert.equal(statements.some(({ sql }) => sql.includes('UPDATE app_users SET active = FALSE')), false);
+});
+
+test('startup refuses enum-based role columns until migration 07 is applied', async () => {
+  const { database } = createDatabase("enum('ADMIN','OFFICER')");
+
+  await assert.rejects(
+    enforceAdminTesterStartupPolicy(database, { production: false, warn() {} }),
+    /database\/07_roles_and_role_permissions\.sql/,
+  );
 });

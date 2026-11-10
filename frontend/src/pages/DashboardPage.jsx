@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext.jsx';
+import { PERMISSION_CODES } from '../config/roles.js';
 
 function BrandMark() {
   return (
@@ -34,6 +35,13 @@ export default function DashboardPage() {
   }
 
   const firstName = user.name.trim().split(/\s+/)[0];
+  const permissions = user.permissions || [];
+  const mayInviteAdmin = permissions.includes(PERMISSION_CODES.INVITE_ADMIN);
+  const mayApproveAdmin = permissions.includes(PERMISSION_CODES.APPROVE_ADMIN_REPLACEMENT);
+  const mayStartReplacement = permissions.includes(PERMISSION_CODES.START_REPLACEMENT);
+  const mayApproveReplacement = permissions.includes(PERMISSION_CODES.APPROVE_REPLACEMENT);
+  const displayRole = user.roleLabel || user.roleCode || user.role;
+  const displayPosition = user.officerPositionLabel;
 
   return (
     <div className="min-h-screen bg-mist">
@@ -41,15 +49,20 @@ export default function DashboardPage() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4 sm:px-8">
           <BrandMark />
           <div className="flex items-center gap-3">
-            {(user.role === 'ADMIN' || user.role === 'ADMIN_TESTER' || user.role === 'OFFICER') && (
+            {(mayInviteAdmin || mayApproveAdmin) && (
               <Link className="button-secondary hidden sm:inline-flex" to="/admin-invitations">
-                {user.role === 'OFFICER' ? 'Review Admin requests' : 'Replace Admin'}
+                {mayApproveAdmin ? 'Review Admin requests' : 'Replace Admin'}
+              </Link>
+            )}
+            {(mayStartReplacement || mayApproveReplacement) && (
+              <Link className="button-secondary hidden md:inline-flex" to="/officer-replacements">
+                {mayStartReplacement ? 'Replace Board Officer' : 'Board Officer changes'}
               </Link>
             )}
             <div className="hidden text-right sm:block">
               <p className="text-sm font-semibold text-ink">{user.name}</p>
               <p className="text-xs text-slate-500">
-                {user.role}{user.officerPosition ? ` · ${user.officerPosition.replaceAll('_', ' ')}` : ''}
+                {displayRole}{displayPosition ? ` · ${displayPosition}` : ''}
               </p>
             </div>
             <div className="grid h-10 w-10 place-items-center rounded-full bg-teal/10 text-sm font-bold text-teal" aria-hidden="true">
@@ -75,7 +88,7 @@ export default function DashboardPage() {
           </div>
           <div className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
             <span className="h-2 w-2 rounded-full bg-emerald-600" />
-            Signed in · {user.role}
+            Signed in · {displayRole}
           </div>
         </div>
 
@@ -93,7 +106,7 @@ export default function DashboardPage() {
           </article>
           <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Access role</p>
-            <p className="mt-3 text-lg font-semibold text-ink">{user.role}</p>
+            <p className="mt-3 text-lg font-semibold text-ink">{displayRole}</p>
             <p className="mt-1 text-sm text-slate-600">Permissions are checked by the API.</p>
           </article>
           <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -103,9 +116,14 @@ export default function DashboardPage() {
           </article>
         </section>
 
-        {(user.role === 'ADMIN' || user.role === 'ADMIN_TESTER' || user.role === 'OFFICER') && (
+        {(mayInviteAdmin || mayApproveAdmin) && (
           <Link className="button-secondary mt-6 sm:hidden" to="/admin-invitations">
-            {user.role === 'OFFICER' ? 'Review Admin requests' : 'Request Admin replacement'}
+            {mayApproveAdmin ? 'Review Admin requests' : 'Request Admin replacement'}
+          </Link>
+        )}
+        {(mayStartReplacement || mayApproveReplacement) && (
+          <Link className="button-secondary mt-3 md:hidden" to="/officer-replacements">
+            {mayStartReplacement ? 'Replace Board Officer' : 'Board Officer changes'}
           </Link>
         )}
 

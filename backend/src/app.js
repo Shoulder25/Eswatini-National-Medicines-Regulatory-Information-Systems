@@ -93,7 +93,7 @@ function createApp({ database }) {
       /admin_invitations|officer_replacement_requests|auth_login_attempts|role_permissions|\broles\b/i.test(schemaMessage)
     ) || (
       error.code === 'ER_BAD_FIELD_ERROR' &&
-      /role_code|actor_role_code|actor_role_label|officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at/i.test(schemaMessage)
+      /role_code|actor_role_code|actor_role_label|officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at|mfa_enrollment_secret_encrypted|setup_totp_secret_encrypted/i.test(schemaMessage)
     );
     if (migrationRequired) {
       return res.status(503).json({

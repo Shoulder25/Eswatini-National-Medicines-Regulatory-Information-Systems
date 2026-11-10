@@ -65,9 +65,9 @@ export function inspectOfficerSetupToken(token) {
   return request('/setup/inspect', { method: 'POST', body: { token } });
 }
 
-export function completeOfficerSetup({ token, password, totpSecret, totpCode }) {
+export function completeOfficerSetup({ token, password, totpCode }) {
   return request('/setup/complete', {
     method: 'POST',
-    body: { token, password, totpSecret, totpCode },
+    body: { token, password, totpCode },
   });
 }

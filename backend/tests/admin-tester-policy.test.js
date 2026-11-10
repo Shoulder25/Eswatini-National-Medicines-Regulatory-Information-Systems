@@ -13,6 +13,13 @@ function createDatabase(roleType = 'varchar(64)') {
     async execute(sql, values = []) {
       statements.push({ sql, values });
       if (sql.includes('information_schema.COLUMNS')) {
+        if (sql.includes('mfa_enrollment_secret_encrypted')) {
+          return [[
+            { TABLE_NAME: 'app_users', COLUMN_NAME: 'mfa_enrollment_secret_encrypted' },
+            { TABLE_NAME: 'admin_invitations', COLUMN_NAME: 'setup_totp_secret_encrypted' },
+            { TABLE_NAME: 'officer_replacement_requests', COLUMN_NAME: 'setup_totp_secret_encrypted' },
+          ], []];
+        }
         return [[
           { COLUMN_NAME: 'role_code', COLUMN_TYPE: roleType },
           { COLUMN_NAME: 'officer_position', COLUMN_TYPE: 'varchar(64)' },

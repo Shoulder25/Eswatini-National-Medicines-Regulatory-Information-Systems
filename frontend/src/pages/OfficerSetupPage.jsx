@@ -1,17 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   completeOfficerSetup,
   inspectOfficerSetupToken,
 } from '../services/officerReplacements.js';
-import { buildAuthenticatorUri, makeAuthenticatorSecret } from '../utils/authenticator.js';
+import AuthenticatorEnrollment from '../components/AuthenticatorEnrollment.jsx';
 
 export default function OfficerSetupPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const [token] = useState(() => new URLSearchParams(window.location.search).get('token') || '');
   const [officer, setOfficer] = useState(null);
-  const [secret] = useState(makeAuthenticatorSecret);
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [totpCode, setTotpCode] = useState('');
@@ -20,10 +19,6 @@ export default function OfficerSetupPage() {
   const [error, setError] = useState('');
   const [complete, setComplete] = useState(false);
   const [copied, setCopied] = useState(false);
-  const authenticatorUri = useMemo(
-    () => officer ? buildAuthenticatorUri(secret, officer.email) : '',
-    [secret, officer],
-  );
 
   useEffect(() => {
     if (location.search) navigate('/setup-officer', { replace: true });
@@ -45,7 +40,7 @@ export default function OfficerSetupPage() {
 
   async function copySecret() {
     try {
-      await navigator.clipboard.writeText(secret);
+      await navigator.clipboard.writeText(officer.totpSecret);
       setCopied(true);
     } catch {
       setError('Could not copy the authenticator key. Select and copy it manually.');
@@ -61,8 +56,9 @@ export default function OfficerSetupPage() {
     }
     setSubmitting(true);
     try {
-      await completeOfficerSetup({ token, password, totpSecret: secret, totpCode });
+      await completeOfficerSetup({ token, password, totpCode });
       setComplete(true);
+      setOfficer(null);
       setPassword('');
       setConfirmation('');
       setTotpCode('');
@@ -102,15 +98,12 @@ export default function OfficerSetupPage() {
               <div className="mt-7 rounded-2xl border border-teal/20 bg-teal/5 p-5">
                 <h2 className="font-semibold text-ink">Enroll your authenticator</h2>
                 <p className="mt-2 text-sm leading-6 text-slate-600">Add this account in an authenticator app using the private key below.</p>
-                <div className="mt-4 rounded-xl bg-white p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Authenticator setup key</p>
-                  <code className="mt-2 block break-all text-sm font-bold tracking-wider text-ink">{secret}</code>
-                  <button className="button-secondary mt-3" onClick={copySecret} type="button">{copied ? 'Copied' : 'Copy key'}</button>
-                </div>
-                <details className="mt-4 text-sm">
-                  <summary className="cursor-pointer font-semibold text-teal">Manual setup details</summary>
-                  <code className="mt-2 block break-all rounded-lg bg-white p-3 text-xs text-slate-700">{authenticatorUri}</code>
-                </details>
+                <AuthenticatorEnrollment
+                  copied={copied}
+                  onCopy={copySecret}
+                  secret={officer.totpSecret}
+                  uri={officer.otpauthUri}
+                />
               </div>
               <form className="mt-7 grid gap-5" onSubmit={submit}>
                 <label className="field-label">

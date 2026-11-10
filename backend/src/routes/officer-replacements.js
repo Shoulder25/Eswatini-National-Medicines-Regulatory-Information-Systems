@@ -10,6 +10,8 @@ const {
   ROLE_CODES,
 } = require('../config/roles');
 const {
+  buildTotpUri,
+  createTotpEnrollment,
   decryptTotpSecret,
   encryptTotpSecret,
   getTotpStep,
@@ -619,7 +621,8 @@ function createOfficerReplacementRouter({
                decision_reason = ?, decided_at = UTC_TIMESTAMP(3),
                setup_token_hash = ?, setup_token_expires_at =
                  DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? HOUR),
-               setup_token_used_at = NULL, delivery_status = 'NOT_SENT', email_sent_at = NULL
+               setup_token_used_at = NULL, setup_totp_secret_encrypted = NULL,
+               delivery_status = 'NOT_SENT', email_sent_at = NULL
            WHERE id = ?`,
           [
             officer.id,
@@ -753,7 +756,8 @@ function createOfficerReplacementRouter({
           `UPDATE officer_replacement_requests
            SET setup_token_hash = ?, setup_token_expires_at =
                  DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? HOUR),
-               setup_token_used_at = NULL, delivery_status = 'NOT_SENT',
+               setup_token_used_at = NULL, setup_totp_secret_encrypted = NULL,
+               delivery_status = 'NOT_SENT',
                email_sent_at = NULL
            WHERE id = ?`,
           [tokenHash(token), SETUP_TOKEN_HOURS, request.id],
@@ -802,6 +806,7 @@ function createOfficerReplacementRouter({
   router.post(
     '/setup/inspect',
     async (req, res, next) => {
+      res.setHeader('Cache-Control', 'no-store');
       const { token } = req.body || {};
       if (!validToken(token)) {
         return respondError(res, req, 400, 'INVALID_REQUEST', 'A valid setup token is required');
@@ -809,24 +814,44 @@ function createOfficerReplacementRouter({
       let connection;
       try {
         connection = await getUtcConnection(database);
+        await connection.beginTransaction();
         const [requests] = await connection.execute(
-          `SELECT id, incoming_name, incoming_email, setup_token_expires_at
+          `SELECT id, incoming_name, incoming_email, setup_token_expires_at,
+                  setup_totp_secret_encrypted
            FROM officer_replacement_requests
            WHERE setup_token_hash = ? AND status = 'APPROVED'
              AND setup_token_used_at IS NULL
              AND setup_token_expires_at > UTC_TIMESTAMP(3)
-           LIMIT 1`,
+           LIMIT 1 FOR UPDATE`,
           [tokenHash(token)],
         );
         if (!requests.length) {
+          await connection.rollback();
           return respondError(res, req, 400, 'INVALID_SETUP_TOKEN', 'The setup token is invalid, expired, or already used');
         }
+        let secret;
+        let encryptedSecret = requests[0].setup_totp_secret_encrypted;
+        if (encryptedSecret) {
+          secret = decryptTotpSecret(encryptedSecret, process.env.AUTH_ENCRYPTION_KEY);
+        } else {
+          const enrollment = createTotpEnrollment(requests[0].incoming_name);
+          secret = enrollment.secret;
+          encryptedSecret = encryptTotpSecret(secret, process.env.AUTH_ENCRYPTION_KEY);
+          await connection.execute(
+            `UPDATE officer_replacement_requests SET setup_totp_secret_encrypted = ? WHERE id = ?`,
+            [encryptedSecret, requests[0].id],
+          );
+        }
+        const otpauthUri = buildTotpUri(secret, requests[0].incoming_name);
+        await connection.commit();
         return res.status(200).json({
           data: {
             requestId: requests[0].id,
             name: requests[0].incoming_name,
             email: requests[0].incoming_email,
             expiresAt: requests[0].setup_token_expires_at,
+            totpSecret: secret,
+            otpauthUri,
           },
         });
       } catch (error) {
@@ -840,23 +865,17 @@ function createOfficerReplacementRouter({
   router.post(
     '/setup/complete',
     async (req, res, next) => {
-      const { token, password, totpSecret, totpCode } = req.body || {};
+      res.setHeader('Cache-Control', 'no-store');
+      const { token, password, totpCode } = req.body || {};
       if (
         !validToken(token) ||
         typeof password !== 'string' ||
         password.length < PASSWORD_MIN_LENGTH ||
         password.length > 1024 ||
-        typeof totpSecret !== 'string' ||
-        !/^[A-Z2-7]{32}$/.test(totpSecret) ||
         typeof totpCode !== 'string' ||
         !/^\d{6}$/.test(totpCode)
       ) {
-        return respondError(res, req, 400, 'INVALID_REQUEST', 'A valid setup token, 12-character password, authenticator key, and current code are required');
-      }
-
-      const codeStep = getTotpStep(totpSecret, totpCode, 0);
-      if (codeStep === null) {
-        return respondError(res, req, 400, 'INVALID_AUTHENTICATOR_CODE', 'The authenticator code does not match the submitted key');
+        return respondError(res, req, 400, 'INVALID_REQUEST', 'A valid setup token, 12-character password, and current authenticator code are required');
       }
 
       let connection;
@@ -875,6 +894,19 @@ function createOfficerReplacementRouter({
         if (!request) {
           await connection.rollback();
           return respondError(res, req, 400, 'INVALID_SETUP_TOKEN', 'The setup token is invalid, expired, or already used');
+        }
+        if (!request.setup_totp_secret_encrypted) {
+          await connection.rollback();
+          return respondError(res, req, 400, 'INVALID_SETUP_TOKEN', 'Open the setup link again to initialize authenticator enrollment');
+        }
+        const totpSecret = decryptTotpSecret(
+          request.setup_totp_secret_encrypted,
+          process.env.AUTH_ENCRYPTION_KEY,
+        );
+        const codeStep = getTotpStep(totpSecret, totpCode, 0);
+        if (codeStep === null) {
+          await connection.rollback();
+          return respondError(res, req, 400, 'INVALID_AUTHENTICATOR_CODE', 'The authenticator code is invalid');
         }
         const email = validateEmailAddress(request.incoming_email);
         if (!email.valid) {
@@ -916,7 +948,7 @@ function createOfficerReplacementRouter({
             email.email,
             await hashPassword(password),
             ROLE_CODES.OFFICER,
-            encryptTotpSecret(totpSecret, process.env.AUTH_ENCRYPTION_KEY),
+            request.setup_totp_secret_encrypted,
             codeStep,
           ],
         );
@@ -924,6 +956,7 @@ function createOfficerReplacementRouter({
           `UPDATE officer_replacement_requests
            SET status = 'SETUP_COMPLETE', setup_token_used_at = UTC_TIMESTAMP(3),
                setup_token_hash = NULL, setup_completed_at = UTC_TIMESTAMP(3),
+               setup_totp_secret_encrypted = NULL,
                created_user_id = ?
            WHERE id = ?`,
           [userId, request.id],

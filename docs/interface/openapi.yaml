@@ -47,6 +47,10 @@ paths:
         '200':
           description: Login successful; an unenrolled Board Officer or Head of IT instead receives an enrollment challenge
           headers:
+            Cache-Control:
+              description: Prevents caching of authentication and authenticator enrollment secrets.
+              schema:
+                type: string
             Set-Cookie:
               description: Opaque session cookie; 20-minute idle timeout. Absent when first-sign-in enrollment is required.
               schema:
@@ -68,7 +72,7 @@ paths:
       tags: [Authentication]
       operationId: completeOfficerMfaEnrollment
       summary: Complete first-sign-in Board Officer authenticator enrollment
-      description: Consumes a short-lived, single-use enrollment challenge returned after password verification. The challenge is held by the client in memory, not in the URL or local storage.
+      description: Consumes a short-lived, single-use enrollment challenge returned after password verification. The pending secret is encrypted at rest; the client submits only the current code.
       security: []
       requestBody:
         required: true
@@ -267,7 +271,12 @@ paths:
                   pattern: '^[A-Za-z0-9_-]{43}$'
       responses:
         '200':
-          description: Invitation recipient and expiry
+          description: Invitation recipient and expiry plus the pending authenticator key and URI; never cache this response
+          headers:
+            Cache-Control:
+              description: No-store response containing the pending authenticator secret.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -279,7 +288,7 @@ paths:
       tags: [Admin replacement]
       operationId: completeAdminSetup
       summary: Enroll the invited replacement Admin
-      description: Public, single-use enrollment with a 24-hour setup token, password, encrypted authenticator secret, and current time-based one-time password (TOTP). Does not deactivate the previous Admin.
+      description: Public, single-use enrollment with a 24-hour setup token, password, and current TOTP code. The backend validates the code against its encrypted pending authenticator secret. Does not deactivate the previous Admin.
       security: []
       requestBody:
         required: true
@@ -441,7 +450,12 @@ paths:
               $ref: '#/components/schemas/SetupTokenRequest'
       responses:
         '200':
-          description: Incoming Officer name, email, and token expiry
+          description: Incoming Officer details, token expiry, and pending authenticator key and URI; never cache this response
+          headers:
+            Cache-Control:
+              description: No-store response containing the pending authenticator secret.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -453,7 +467,7 @@ paths:
       tags: [Officer replacement]
       operationId: completeOfficerReplacementSetup
       summary: Create incoming Officer account and enroll MFA
-      description: Public single-use enrollment. The outgoing Officer remains active until the incoming Officer completes a successful sign-in.
+      description: Public single-use enrollment using the pending encrypted authenticator secret and its current code. The outgoing Officer remains active until the incoming Officer completes a successful sign-in.
       security: []
       requestBody:
         required: true
@@ -1225,26 +1239,22 @@ components:
           description: Required for enrolled accounts; omitted for first-time Board Officer authenticator enrollment.
     OfficerMfaEnrollmentRequest:
       type: object
-      required: [enrollmentToken, totpSecret, totpCode]
+      required: [enrollmentToken, totpCode]
       properties:
         enrollmentToken:
           type: string
           description: Single-use challenge received in the password-authenticated login response.
-        totpSecret:
-          type: string
-          pattern: '^[A-Z2-7]{32}$'
-          description: Authenticator secret; encrypted at rest by the API.
         totpCode:
           type: string
           pattern: '^[0-9]{6}$'
-          description: Current code generated from the submitted TOTP secret.
+          description: Current code generated from the pending authenticator secret.
     OfficerMfaEnrollmentResponse:
       type: object
       required: [data]
       properties:
         data:
           type: object
-          required: [mfaEnrollmentRequired, enrollmentToken, enrollmentExpiresInMinutes, user]
+          required: [mfaEnrollmentRequired, enrollmentToken, enrollmentExpiresInMinutes, totpSecret, otpauthUri, user]
           properties:
             mfaEnrollmentRequired:
               type: boolean
@@ -1255,6 +1265,14 @@ components:
             enrollmentExpiresInMinutes:
               type: integer
               const: 10
+            totpSecret:
+              type: string
+              pattern: '^[A-Z2-7]{32}$'
+              description: Manual fallback key; returned only with Cache-Control no-store.
+            otpauthUri:
+              type: string
+              format: uri
+              description: Standard URI using the eNMRIS issuer and account holder's full name, not email; returned only with Cache-Control no-store.
             user:
               type: object
               required: [id, name, email, role, officerPosition]
@@ -1381,7 +1399,7 @@ components:
           pattern: '^[0-9]{6}$'
     OfficerSetupCompleteRequest:
       type: object
-      required: [token, password, totpSecret, totpCode]
+      required: [token, password, totpCode]
       properties:
         token:
           type: string
@@ -1391,9 +1409,6 @@ components:
           format: password
           minLength: 12
           maxLength: 1024
-        totpSecret:
-          type: string
-          pattern: '^[A-Z2-7]{32}$'
         totpCode:
           type: string
           pattern: '^[0-9]{6}$'
@@ -1504,7 +1519,7 @@ components:
       properties:
         data:
           type: object
-          required: [requestId, name, email, expiresAt]
+          required: [requestId, name, email, expiresAt, totpSecret, otpauthUri]
           properties:
             requestId:
               type: string
@@ -1517,6 +1532,13 @@ components:
             expiresAt:
               type: string
               format: date-time
+            totpSecret:
+              type: string
+              pattern: '^[A-Z2-7]{32}$'
+            otpauthUri:
+              type: string
+              format: uri
+              description: Uses the eNMRIS issuer and incoming Officer's full name, not email.
     AdminInvitation:
       type: object
       required: [id, invitee_name, invitee_email, status, approval_expires_at, created_at]
@@ -1604,7 +1626,7 @@ components:
       properties:
         data:
           type: object
-          required: [invitationId, name, email, expiresAt]
+          required: [invitationId, name, email, expiresAt, totpSecret, otpauthUri]
           properties:
             invitationId:
               type: string
@@ -1617,9 +1639,16 @@ components:
             expiresAt:
               type: string
               format: date-time
+            totpSecret:
+              type: string
+              pattern: '^[A-Z2-7]{32}$'
+            otpauthUri:
+              type: string
+              format: uri
+              description: Uses the eNMRIS issuer and invitee's full name, not email.
     AdminSetupCompleteRequest:
       type: object
-      required: [token, password, totpSecret, totpCode]
+      required: [token, password, totpCode]
       properties:
         token:
           type: string
@@ -1629,9 +1658,6 @@ components:
           format: password
           minLength: 12
           maxLength: 1024
-        totpSecret:
-          type: string
-          pattern: '^[A-Z2-7]{32}$'
         totpCode:
           type: string
           pattern: '^[0-9]{6}$'

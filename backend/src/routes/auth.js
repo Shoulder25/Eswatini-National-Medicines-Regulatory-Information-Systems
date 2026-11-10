@@ -12,6 +12,7 @@ const { writeAudit } = require('../services/audit');
 const { getEffectivePermissions } = require('../services/permissions');
 const {
   createLoginBucket,
+  createTotpEnrollment,
   decodeKey,
   decryptTotpSecret,
   encryptTotpSecret,
@@ -286,12 +287,19 @@ function createAuthRouter({ database }) {
         !user.totp_secret_encrypted
       ) {
         const enrollmentToken = crypto.randomBytes(32).toString('base64url');
+        const enrollment = createTotpEnrollment(user.name);
         await connection.execute(
           `UPDATE app_users
            SET mfa_enrollment_token_hash = ?,
+               mfa_enrollment_secret_encrypted = ?,
                mfa_enrollment_expires_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? MINUTE)
            WHERE id = ? AND active = TRUE AND mfa_enabled = FALSE`,
-          [hashSessionToken(enrollmentToken), MFA_ENROLLMENT_TIMEOUT_MINUTES, user.id],
+          [
+            hashSessionToken(enrollmentToken),
+            encryptTotpSecret(enrollment.secret, process.env.AUTH_ENCRYPTION_KEY),
+            MFA_ENROLLMENT_TIMEOUT_MINUTES,
+            user.id,
+          ],
         );
         await connection.execute(
           `UPDATE auth_login_attempts SET failure_count = 0, locked_until = NULL
@@ -316,6 +324,8 @@ function createAuthRouter({ database }) {
             mfaEnrollmentRequired: true,
             enrollmentToken,
             enrollmentExpiresInMinutes: MFA_ENROLLMENT_TIMEOUT_MINUTES,
+            totpSecret: enrollment.secret,
+            otpauthUri: enrollment.uri,
             user: {
               id: user.id,
               name: user.name,
@@ -460,16 +470,14 @@ function createAuthRouter({ database }) {
   });
 
   router.post('/mfa/enrollment/complete', async (req, res, next) => {
-    const { enrollmentToken, totpSecret, totpCode } = req.body || {};
+    const { enrollmentToken, totpCode } = req.body || {};
     if (
       typeof enrollmentToken !== 'string' ||
       !/^[A-Za-z0-9_-]{43}$/.test(enrollmentToken) ||
-      typeof totpSecret !== 'string' ||
-      !/^[A-Z2-7]{32}$/.test(totpSecret) ||
       typeof totpCode !== 'string' ||
       !/^\d{6}$/.test(totpCode)
     ) {
-      return errorResponse(res, req, 400, 'INVALID_REQUEST', 'A valid enrollment token, authenticator key, and current code are required');
+      return errorResponse(res, req, 400, 'INVALID_REQUEST', 'A valid enrollment token and current authenticator code are required');
     }
 
     try {
@@ -487,7 +495,8 @@ function createAuthRouter({ database }) {
       const [users] = await connection.execute(
         `SELECT u.id, u.name, u.email, u.role_code AS role, u.role_code,
                 account_role.display_label AS role_label, u.officer_position,
-                position_role.display_label AS officer_position_label, u.mfa_enabled
+                position_role.display_label AS officer_position_label, u.mfa_enabled,
+                u.mfa_enrollment_secret_encrypted
          FROM app_users u
          JOIN roles account_role ON account_role.role_code = u.role_code
          LEFT JOIN roles position_role ON position_role.role_code = u.officer_position
@@ -509,6 +518,14 @@ function createAuthRouter({ database }) {
         await connection.rollback();
         return errorResponse(res, req, 400, 'INVALID_MFA_ENROLLMENT', 'The authenticator enrollment is invalid or expired');
       }
+      if (!user.mfa_enrollment_secret_encrypted) {
+        await connection.rollback();
+        return errorResponse(res, req, 400, 'INVALID_MFA_ENROLLMENT', 'The authenticator enrollment is invalid or expired');
+      }
+      const totpSecret = decryptTotpSecret(
+        user.mfa_enrollment_secret_encrypted,
+        process.env.AUTH_ENCRYPTION_KEY,
+      );
 
       const bucketHash = createLoginBucket(user.email, req.ip || 'unknown', process.env.AUTH_RATE_LIMIT_KEY);
       await connection.execute(
@@ -566,11 +583,12 @@ function createAuthRouter({ database }) {
 
       await connection.execute(
         `UPDATE app_users
-         SET totp_secret_encrypted = ?, totp_last_used_step = ?, mfa_enabled = TRUE,
+         SET totp_secret_encrypted = ?, mfa_enrollment_secret_encrypted = NULL,
+             totp_last_used_step = ?, mfa_enabled = TRUE,
              mfa_enrollment_token_hash = NULL, mfa_enrollment_expires_at = NULL
          WHERE id = ? AND active = TRUE AND mfa_enabled = FALSE`,
         [
-          encryptTotpSecret(totpSecret, process.env.AUTH_ENCRYPTION_KEY),
+          user.mfa_enrollment_secret_encrypted,
           codeStep,
           user.id,
         ],

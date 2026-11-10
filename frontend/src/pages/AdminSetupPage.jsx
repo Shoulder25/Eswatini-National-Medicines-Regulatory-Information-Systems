@@ -1,17 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   completeAdminSetup,
   inspectAdminSetupToken,
 } from '../services/adminInvitations.js';
-import { buildAuthenticatorUri, makeAuthenticatorSecret } from '../utils/authenticator.js';
+import AuthenticatorEnrollment from '../components/AuthenticatorEnrollment.jsx';
 
 export default function AdminSetupPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const [token] = useState(() => new URLSearchParams(window.location.search).get('token') || '');
   const [invitation, setInvitation] = useState(null);
-  const [secret] = useState(makeAuthenticatorSecret);
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [totpCode, setTotpCode] = useState('');
@@ -20,10 +19,6 @@ export default function AdminSetupPage() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [copied, setCopied] = useState(false);
-  const authenticatorUri = useMemo(
-    () => invitation ? buildAuthenticatorUri(secret, invitation.email) : '',
-    [secret, invitation],
-  );
 
   useEffect(() => {
     if (location.search) {
@@ -55,7 +50,7 @@ export default function AdminSetupPage() {
 
   async function copySecret() {
     try {
-      await navigator.clipboard.writeText(secret);
+      await navigator.clipboard.writeText(invitation.totpSecret);
       setCopied(true);
     } catch {
       setError('Could not copy the authenticator key. Select and copy it manually.');
@@ -72,8 +67,9 @@ export default function AdminSetupPage() {
     }
     setSubmitting(true);
     try {
-      await completeAdminSetup({ token, password, totpSecret: secret, totpCode });
+      await completeAdminSetup({ token, password, totpCode });
       setNotice('Setup is complete. Sign in with your new password and authenticator code to verify the replacement Admin account.');
+      setInvitation(null);
       setPassword('');
       setConfirmation('');
       setTotpCode('');
@@ -116,17 +112,12 @@ export default function AdminSetupPage() {
                 <p className="mt-2 text-sm leading-6 text-slate-600">
                   Add this account in an authenticator app by entering the key below. It creates a time-based one-time password (TOTP). Keep the key private.
                 </p>
-                <div className="mt-4 rounded-xl bg-white p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Authenticator setup key</p>
-                  <code className="mt-2 block break-all text-sm font-bold tracking-wider text-ink">{secret}</code>
-                  <button className="button-secondary mt-3" onClick={copySecret} type="button">
-                    {copied ? 'Copied' : 'Copy key'}
-                  </button>
-                </div>
-                <details className="mt-4 text-sm">
-                  <summary className="cursor-pointer font-semibold text-teal">Manual setup details</summary>
-                  <code className="mt-2 block break-all rounded-lg bg-white p-3 text-xs text-slate-700">{authenticatorUri}</code>
-                </details>
+                <AuthenticatorEnrollment
+                  copied={copied}
+                  onCopy={copySecret}
+                  secret={invitation.totpSecret}
+                  uri={invitation.otpauthUri}
+                />
               </div>
               <form className="mt-7 grid gap-5" onSubmit={submit}>
                 <label className="field-label">

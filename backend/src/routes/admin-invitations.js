@@ -9,6 +9,8 @@ const {
   ROLE_CODES,
 } = require('../config/roles');
 const {
+  buildTotpUri,
+  createTotpEnrollment,
   decryptTotpSecret,
   encryptTotpSecret,
   getTotpStep,
@@ -515,7 +517,8 @@ function createAdminInvitationRouter({
              decision_reason = ?, decided_at = UTC_TIMESTAMP(3),
              setup_token_hash = ?, setup_token_expires_at =
                DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? HOUR),
-             setup_token_used_at = NULL, delivery_status = 'NOT_SENT', email_sent_at = NULL
+             setup_token_used_at = NULL, setup_totp_secret_encrypted = NULL,
+             delivery_status = 'NOT_SENT', email_sent_at = NULL
          WHERE id = ?`,
         [officer.id, officer.officer_position, reason.trim(), digest, SETUP_TOKEN_HOURS, invitation.id],
       );
@@ -657,7 +660,8 @@ function createAdminInvitationRouter({
         `UPDATE admin_invitations
          SET setup_token_hash = ?, setup_token_expires_at =
                DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? HOUR),
-             setup_token_used_at = NULL, delivery_status = 'NOT_SENT', email_sent_at = NULL
+             setup_token_used_at = NULL, setup_totp_secret_encrypted = NULL,
+             delivery_status = 'NOT_SENT', email_sent_at = NULL
          WHERE id = ?`,
         [tokenHash(setupToken), SETUP_TOKEN_HOURS, invitation.id],
       );
@@ -729,24 +733,44 @@ function createAdminInvitationRouter({
     let connection;
     try {
       connection = await getUtcConnection(database);
+      await connection.beginTransaction();
       const [rows] = await connection.execute(
-        `SELECT id, invitee_name, invitee_email, setup_token_expires_at
+        `SELECT id, invitee_name, invitee_email, setup_token_expires_at,
+                setup_totp_secret_encrypted
          FROM admin_invitations
          WHERE setup_token_hash = ? AND status = 'APPROVED'
            AND setup_token_used_at IS NULL
            AND setup_token_expires_at > UTC_TIMESTAMP(3)
-         LIMIT 1`,
+         LIMIT 1 FOR UPDATE`,
         [tokenHash(token)],
       );
       if (!rows.length) {
+        await connection.rollback();
         return respondError(res, req, 400, 'INVALID_SETUP_TOKEN', 'The setup link is invalid or expired');
       }
+      let secret;
+      let encryptedSecret = rows[0].setup_totp_secret_encrypted;
+      if (encryptedSecret) {
+        secret = decryptTotpSecret(encryptedSecret, process.env.AUTH_ENCRYPTION_KEY);
+      } else {
+        const enrollment = createTotpEnrollment(rows[0].invitee_name);
+        secret = enrollment.secret;
+        encryptedSecret = encryptTotpSecret(secret, process.env.AUTH_ENCRYPTION_KEY);
+        await connection.execute(
+          `UPDATE admin_invitations SET setup_totp_secret_encrypted = ? WHERE id = ?`,
+          [encryptedSecret, rows[0].id],
+        );
+      }
+      const otpauthUri = buildTotpUri(secret, rows[0].invitee_name);
+      await connection.commit();
       return res.status(200).json({
         data: {
           invitationId: rows[0].id,
           name: rows[0].invitee_name,
           email: rows[0].invitee_email,
           expiresAt: rows[0].setup_token_expires_at,
+          totpSecret: secret,
+          otpauthUri,
         },
       });
     } catch (error) {
@@ -758,19 +782,13 @@ function createAdminInvitationRouter({
 
   router.post('/setup/complete', async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
-    const { token, password, totpSecret, totpCode } = req.body || {};
+    const { token, password, totpCode } = req.body || {};
     if (
       !validSetupToken(token) ||
       typeof password !== 'string' || password.length < PASSWORD_MIN_LENGTH || password.length > 1024 ||
-      typeof totpSecret !== 'string' || !/^[A-Z2-7]{32}$/.test(totpSecret) ||
       typeof totpCode !== 'string' || !/^\d{6}$/.test(totpCode)
     ) {
-      return respondError(res, req, 400, 'INVALID_REQUEST', 'A valid setup link, password, authenticator secret, and current code are required');
-    }
-
-    const codeStep = getTotpStep(totpSecret, totpCode, 0);
-    if (codeStep === null) {
-      return respondError(res, req, 400, 'INVALID_AUTHENTICATOR_CODE', 'The authenticator code is invalid');
+      return respondError(res, req, 400, 'INVALID_REQUEST', 'A valid setup link, password, and current authenticator code are required');
     }
 
     let connection;
@@ -789,6 +807,19 @@ function createAdminInvitationRouter({
       if (!invitation) {
         await connection.rollback();
         return respondError(res, req, 400, 'INVALID_SETUP_TOKEN', 'The setup link is invalid or expired');
+      }
+      if (!invitation.setup_totp_secret_encrypted) {
+        await connection.rollback();
+        return respondError(res, req, 400, 'INVALID_SETUP_TOKEN', 'Open the setup link again to initialize authenticator enrollment');
+      }
+      const totpSecret = decryptTotpSecret(
+        invitation.setup_totp_secret_encrypted,
+        process.env.AUTH_ENCRYPTION_KEY,
+      );
+      const codeStep = getTotpStep(totpSecret, totpCode, 0);
+      if (codeStep === null) {
+        await connection.rollback();
+        return respondError(res, req, 400, 'INVALID_AUTHENTICATOR_CODE', 'The authenticator code is invalid');
       }
 
       const email = validateEmailAddress(invitation.invitee_email);
@@ -833,7 +864,7 @@ function createAdminInvitationRouter({
           email.email,
           await hashPassword(password),
           ROLE_CODES.ADMIN,
-          encryptTotpSecret(totpSecret, process.env.AUTH_ENCRYPTION_KEY),
+          invitation.setup_totp_secret_encrypted,
           codeStep,
         ],
       );
@@ -841,6 +872,7 @@ function createAdminInvitationRouter({
         `UPDATE admin_invitations
          SET status = 'SETUP_COMPLETE', setup_token_used_at = UTC_TIMESTAMP(3),
              setup_token_hash = NULL, setup_completed_at = UTC_TIMESTAMP(3),
+             setup_totp_secret_encrypted = NULL,
              created_user_id = ?
          WHERE id = ?`,
         [userId, invitation.id],

@@ -66,6 +66,8 @@ export function AuthProvider({ children }) {
         token: result.enrollmentToken,
         user: result.user,
         expiresInMinutes: result.enrollmentExpiresInMinutes,
+        totpSecret: result.totpSecret,
+        otpauthUri: result.otpauthUri,
       });
       return { mfaEnrollmentRequired: true };
     }
@@ -77,13 +79,12 @@ export function AuthProvider({ children }) {
     setPhase('authenticated');
   }, []);
 
-  const completeMfaEnrollment = useCallback(async ({ totpSecret, totpCode }) => {
+  const completeMfaEnrollment = useCallback(async ({ totpCode }) => {
     if (!pendingMfaEnrollment) {
       throw new Error('The authenticator enrollment has expired. Sign in again to restart.');
     }
     const session = await completeOfficerEnrollment({
       enrollmentToken: pendingMfaEnrollment.token,
-      totpSecret,
       totpCode,
     });
     setUser(session.user);

@@ -26,15 +26,36 @@ async function enforceAdminTesterStartupPolicy(database, {
     ) {
       throw new Error('Apply database/07_roles_and_role_permissions.sql before starting the API');
     }
+    const [enrollmentColumns] = await connection.execute(
+      `SELECT TABLE_NAME, COLUMN_NAME
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND (
+           (TABLE_NAME = 'app_users' AND COLUMN_NAME = 'mfa_enrollment_secret_encrypted')
+           OR (TABLE_NAME IN ('admin_invitations', 'officer_replacement_requests')
+             AND COLUMN_NAME = 'setup_totp_secret_encrypted')
+         )`,
+    );
+    const enrollmentColumnNames = new Set(
+      enrollmentColumns.map((column) => `${column.TABLE_NAME}.${column.COLUMN_NAME}`),
+    );
+    if (
+      !enrollmentColumnNames.has('app_users.mfa_enrollment_secret_encrypted') ||
+      !enrollmentColumnNames.has('admin_invitations.setup_totp_secret_encrypted') ||
+      !enrollmentColumnNames.has('officer_replacement_requests.setup_totp_secret_encrypted')
+    ) {
+      throw new Error('Apply database/08_encrypted_pending_authenticator_enrollment.sql before starting the API');
+    }
     await connection.execute('SELECT role_code FROM roles LIMIT 0');
     await connection.execute('SELECT role_code, permission_code FROM role_permissions LIMIT 0');
     await connection.execute('SELECT actor_role_code, actor_role_label FROM audit_log LIMIT 0');
     await connection.execute(
-      `SELECT mfa_enrollment_token_hash, mfa_enrollment_expires_at
+      `SELECT mfa_enrollment_token_hash, mfa_enrollment_expires_at,
+              mfa_enrollment_secret_encrypted
        FROM app_users LIMIT 0`,
     );
-    await connection.execute('SELECT id FROM admin_invitations LIMIT 0');
-    await connection.execute('SELECT id FROM officer_replacement_requests LIMIT 0');
+    await connection.execute('SELECT id, setup_totp_secret_encrypted FROM admin_invitations LIMIT 0');
+    await connection.execute('SELECT id, setup_totp_secret_encrypted FROM officer_replacement_requests LIMIT 0');
 
     await connection.beginTransaction();
     const [testers] = await connection.execute(

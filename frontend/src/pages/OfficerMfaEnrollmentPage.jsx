@@ -1,21 +1,17 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
-import { buildAuthenticatorUri, makeAuthenticatorSecret } from '../utils/authenticator.js';
+import AuthenticatorEnrollment from '../components/AuthenticatorEnrollment.jsx';
 
 export default function OfficerMfaEnrollmentPage() {
   const navigate = useNavigate();
   const { user, pendingMfaEnrollment, completeMfaEnrollment } = useAuth();
-  const [secret] = useState(makeAuthenticatorSecret);
   const [totpCode, setTotpCode] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
   const email = pendingMfaEnrollment?.user.email || '';
-  const authenticatorUri = useMemo(
-    () => email ? buildAuthenticatorUri(secret, email) : '',
-    [secret, email],
-  );
+  const secret = pendingMfaEnrollment?.totpSecret || '';
 
   if (user) return <Navigate to="/dashboard" replace />;
   if (!pendingMfaEnrollment) return <Navigate to="/login" replace />;
@@ -34,7 +30,7 @@ export default function OfficerMfaEnrollmentPage() {
     setError('');
     setSubmitting(true);
     try {
-      await completeMfaEnrollment({ totpSecret: secret, totpCode });
+      await completeMfaEnrollment({ totpCode });
       navigate('/dashboard', { replace: true });
     } catch (requestError) {
       setError(requestError.message);
@@ -57,17 +53,12 @@ export default function OfficerMfaEnrollmentPage() {
             <p className="text-sm leading-6 text-slate-600">
               Enter this private key in your authenticator app. It creates a time-based one-time password (TOTP). Do not share or save the key in an untrusted place.
             </p>
-            <div className="mt-4 rounded-xl bg-white p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Authenticator setup key</p>
-              <code className="mt-2 block break-all text-sm font-bold tracking-wider text-ink">{secret}</code>
-              <button className="button-secondary mt-3" onClick={copySecret} type="button">
-                {copied ? 'Copied' : 'Copy key'}
-              </button>
-            </div>
-            <details className="mt-4 text-sm">
-              <summary className="cursor-pointer font-semibold text-teal">Manual setup details</summary>
-              <code className="mt-2 block break-all rounded-lg bg-white p-3 text-xs text-slate-700">{authenticatorUri}</code>
-            </details>
+            <AuthenticatorEnrollment
+              copied={copied}
+              onCopy={copySecret}
+              secret={secret}
+              uri={pendingMfaEnrollment.otpauthUri}
+            />
           </div>
           <form className="mt-7 grid gap-5" onSubmit={submit}>
             <label className="field-label">

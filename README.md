@@ -28,8 +28,9 @@ approved for use.
 1. In MySQL Workbench, on a fresh database run `database/01_schema.sql`, then
    `database/02_seed.sql`. On an existing database, apply
    `database/03_auth_login_attempts.sql` if needed, then apply migrations 04,
-   05, 06, and 07 once and in order before restarting. Migration 05 depends on
-   04, migration 06 depends on 05, and migration 07 depends on 06. Do not rerun
+   05, 06, 07, and 08 once and in order before restarting. Migration 05 depends on
+   04, migration 06 depends on 05, migration 07 depends on 06, and migration 08
+   depends on 07. Do not rerun
    numbered migrations or run the fresh-install schema over an existing DB.
    To verify the import, run
    `SELECT COUNT(*) FROM enmris.products;` and
@@ -43,7 +44,8 @@ approved for use.
    on `audit_log`. Grant
    column-scoped `UPDATE` on `app_users` for
    `totp_secret_encrypted`, `totp_last_used_step`, `mfa_enrollment_token_hash`,
-   `mfa_enrollment_expires_at`, `mfa_enabled`, `active`, and `officer_position`;
+   `mfa_enrollment_expires_at`, `mfa_enrollment_secret_encrypted`,
+   `mfa_enabled`, `active`, and `officer_position`;
    do not grant the application account `UPDATE` on `role_code` or `UPDATE`/`DELETE`
    on `audit_log`.
    The one-time tester scripts use a separately prompted maintenance account.
@@ -211,7 +213,8 @@ The incoming Officer is staged without a position; the outgoing Officer stays
 active until setup and successful sign-in. The emergency action and final
 handover are audited. Never use this command when a continuing Officer is
 available. Existing databases must apply migrations 05, 06, then
-`database/07_roles_and_role_permissions.sql` in order. Grant the
+`database/07_roles_and_role_permissions.sql`, then
+`database/08_encrypted_pending_authenticator_enrollment.sql` in order. Grant the
 application account table access to `officer_replacement_requests` and
 column-scoped `UPDATE` on `app_users.officer_position`; retain the no
 `UPDATE`/`DELETE` restriction on `audit_log`.
@@ -239,7 +242,8 @@ GRANT SELECT, INSERT ON enmris.app_users
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT UPDATE (
   totp_secret_encrypted, totp_last_used_step, mfa_enrollment_token_hash,
-  mfa_enrollment_expires_at, mfa_enabled, active, officer_position
+  mfa_enrollment_expires_at, mfa_enrollment_secret_encrypted,
+  mfa_enabled, active, officer_position
 ) ON enmris.app_users
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE ON enmris.app_sessions

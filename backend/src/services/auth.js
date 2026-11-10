@@ -43,6 +43,26 @@ function encryptTotpSecret(secret, encodedKey) {
   return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
 }
 
+function createTotpEnrollment(name) {
+  const secret = new OTPAuth.Secret({ size: 20 });
+  return {
+    secret: secret.base32,
+    uri: buildTotpUri(secret.base32, name),
+  };
+}
+
+function buildTotpUri(secretValue, name) {
+  const totp = new OTPAuth.TOTP({
+    issuer: 'eNMRIS',
+    label: name,
+    algorithm: 'SHA1',
+    digits: 6,
+    period: 30,
+    secret: OTPAuth.Secret.fromBase32(secretValue),
+  });
+  return totp.toString();
+}
+
 function decryptTotpSecret(encryptedValue, encodedKey) {
   const key = decodeKey(encodedKey, 'AUTH_ENCRYPTION_KEY');
   const encrypted = Buffer.from(encryptedValue);
@@ -92,6 +112,8 @@ function createLoginBucket(email, ipAddress, encodedKey) {
 
 module.exports = {
   createLoginBucket,
+  createTotpEnrollment,
+  buildTotpUri,
   decodeKey,
   decryptTotpSecret,
   encryptTotpSecret,

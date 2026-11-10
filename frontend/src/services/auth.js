@@ -47,10 +47,10 @@ export function login({ email, password, totpCode }) {
   });
 }
 
-export function completeOfficerMfaEnrollment({ enrollmentToken, totpSecret, totpCode }) {
+export function completeOfficerMfaEnrollment({ enrollmentToken, totpCode }) {
   return request('/mfa/enrollment/complete', {
     method: 'POST',
-    body: { enrollmentToken, totpSecret, totpCode },
+    body: { enrollmentToken, totpCode },
   });
 }
 

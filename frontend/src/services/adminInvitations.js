@@ -64,9 +64,9 @@ export function inspectAdminSetupToken(token) {
   return request('/setup/inspect', { method: 'POST', body: { token } });
 }
 
-export function completeAdminSetup({ token, password, totpSecret, totpCode }) {
+export function completeAdminSetup({ token, password, totpCode }) {
   return request('/setup/complete', {
     method: 'POST',
-    body: { token, password, totpSecret, totpCode },
+    body: { token, password, totpCode },
   });
 }

@@ -223,8 +223,19 @@ test('Board Officer password sign-in returns an in-memory MFA enrollment challen
     assert.equal(body.data.mfaEnrollmentRequired, true);
     assert.equal(body.data.enrollmentExpiresInMinutes, 10);
     assert.match(body.data.enrollmentToken, /^[A-Za-z0-9_-]{43}$/);
+    const enrollmentUri = new URL(body.data.otpauthUri);
+    assert.equal(enrollmentUri.protocol, 'otpauth:');
+    assert.equal(decodeURIComponent(enrollmentUri.pathname.slice(1)), 'eNMRIS:Board Chair');
+    assert.equal(decodeURIComponent(enrollmentUri.pathname.slice(1)).includes(user.email), false);
+    assert.equal(enrollmentUri.searchParams.get('secret'), body.data.totpSecret);
+    assert.equal(enrollmentUri.searchParams.get('issuer'), 'eNMRIS');
+    assert.equal(enrollmentUri.searchParams.get('algorithm'), 'SHA1');
+    assert.equal(enrollmentUri.searchParams.get('digits'), '6');
+    assert.equal(enrollmentUri.searchParams.get('period'), '30');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('set-cookie'), null);
     assert.equal(parameters.includes(body.data.enrollmentToken), false);
+    assert.ok(parameters.some(Buffer.isBuffer));
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
@@ -337,6 +348,7 @@ test('Board Officer MFA enrollment encrypts the secret and creates the first ses
     officer_position: 'BOARD_CHAIR',
     officer_position_label: 'Board Chair',
     mfa_enabled: 0,
+    mfa_enrollment_secret_encrypted: encryptTotpSecret(secret.base32, encryptionKey),
   };
   const statements = [];
   let encryptedSecret;
@@ -387,7 +399,6 @@ test('Board Officer MFA enrollment encrypts the secret and creates the first ses
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           enrollmentToken,
-          totpSecret: secret.base32,
           totpCode: totp.generate(),
         }),
       },
@@ -398,8 +409,10 @@ test('Board Officer MFA enrollment encrypts the secret and creates the first ses
     assert.equal(body.data.user.id, user.id);
     assert.equal(body.data.user.role, 'OFFICER');
     assert.match(response.headers.get('set-cookie'), /HttpOnly; SameSite=Lax/);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(decryptTotpSecret(encryptedSecret, encryptionKey), secret.base32);
     assert.ok(statements.some((sql) => sql.includes('mfa_enrollment_token_hash = ?')));
+    assert.ok(statements.some((sql) => sql.includes('mfa_enrollment_secret_encrypted = NULL')));
     assert.ok(statements.some((sql) => sql.includes('INSERT INTO app_sessions')));
     assert.equal(statements.filter((sql) => sql.includes('INSERT INTO app_sessions')).length, 1);
   } finally {

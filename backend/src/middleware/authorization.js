@@ -11,7 +11,8 @@ function requireRole(...roles) {
       return authorizationFailure(req, res, 401, 'UNAUTHENTICATED', 'Authentication is required');
     }
 
-    if (!roles.includes(req.user.role)) {
+    const adminTesterHasAdminRole = req.user.role === 'ADMIN_TESTER' && roles.includes('ADMIN');
+    if (!roles.includes(req.user.role) && !adminTesterHasAdminRole) {
       return authorizationFailure(req, res, 403, 'FORBIDDEN', 'Caller lacks the required role');
     }
 
@@ -36,4 +37,17 @@ function requirePermission(...permissions) {
   };
 }
 
-module.exports = { requirePermission, requireRole };
+function requireBoardOfficer(req, res, next) {
+  const allowedPositions = ['BOARD_CHAIR', 'BOARD_VICE_CHAIR'];
+  if (!req.user) {
+    return authorizationFailure(req, res, 401, 'UNAUTHENTICATED', 'Authentication is required');
+  }
+
+  if (req.user.role !== 'OFFICER' || !allowedPositions.includes(req.user.officerPosition)) {
+    return authorizationFailure(req, res, 403, 'FORBIDDEN', 'Board Officer approval is required');
+  }
+
+  return next();
+}
+
+module.exports = { requireBoardOfficer, requirePermission, requireRole };

@@ -1,20 +1,25 @@
 const crypto = require('node:crypto');
 const express = require('express');
 const { getUtcConnection } = require('../config/connection');
+const { createSessionMiddleware } = require('../middleware/session');
+const { originIsAllowed } = require('../middleware/csrf');
+const { writeAudit } = require('../services/audit');
 const {
   createLoginBucket,
   decodeKey,
   decryptTotpSecret,
+  encryptTotpSecret,
+  getTotpStep,
   hashPassword,
   hashSessionToken,
   verifyPassword,
-  verifyTotpCode,
 } = require('../services/auth');
 
 const SESSION_COOKIE = 'enmris_session';
 const IDLE_TIMEOUT_MINUTES = 20;
 const LOGIN_WINDOW_MINUTES = 15;
 const MAX_LOGIN_FAILURES = 5;
+const MFA_ENROLLMENT_TIMEOUT_MINUTES = 10;
 
 const dummyPasswordHash = hashPassword('invalid-login-placeholder-never-used');
 
@@ -28,60 +33,19 @@ function errorResponse(res, req, status, code, message, retryAfter) {
   });
 }
 
-function readCookie(header, name) {
-  for (const part of String(header || '').split(';')) {
-    const separator = part.indexOf('=');
-    if (separator < 0 || part.slice(0, separator).trim() !== name) {
-      continue;
-    }
-    return part.slice(separator + 1).trim();
-  }
-  return null;
-}
-
 function sessionCookie(token, secure) {
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=${IDLE_TIMEOUT_MINUTES * 60}${secure ? '; Secure' : ''}`;
-}
-
-function originIsAllowed(req) {
-  const origin = req.get('origin');
-  if (!origin) {
-    return false;
-  }
-
-  const configuredOrigin = process.env.APP_ORIGIN;
-  if (configuredOrigin) {
-    return origin === configuredOrigin;
-  }
-
-  try {
-    return new URL(origin).host === req.get('host');
-  } catch {
-    return false;
-  }
-}
-
-async function writeAudit(connection, { actorId, action, entityName, recordId, requestId, afterValue }) {
-  await connection.execute(
-    `INSERT INTO audit_log
-       (id, actor_type, actor_id, action, entity_name, record_id, after_value, request_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      crypto.randomUUID(),
-      actorId ? 'USER' : 'SYSTEM',
-      actorId || null,
-      action,
-      entityName,
-      recordId || null,
-      afterValue ? JSON.stringify(afterValue) : null,
-      requestId,
-    ],
-  );
 }
 
 function createAuthRouter({ database }) {
   const router = express.Router();
   const production = process.env.NODE_ENV === 'production';
+  const authenticate = createSessionMiddleware(database, SESSION_COOKIE, IDLE_TIMEOUT_MINUTES);
+
+  router.use((req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
   router.use((req, res, next) => {
     if (production && !req.secure) {
@@ -92,10 +56,12 @@ function createAuthRouter({ database }) {
 
   router.post('/login', async (req, res, next) => {
     const { email, password, totpCode } = req.body || {};
+    const suppliedTotpCode = typeof totpCode === 'string' ? totpCode : '';
     if (
       typeof email !== 'string' || email.length > 254 ||
       typeof password !== 'string' || password.length > 1024 ||
-      typeof totpCode !== 'string' || !/^\d{6}$/.test(totpCode)
+      (totpCode !== undefined && typeof totpCode !== 'string') ||
+      (suppliedTotpCode !== '' && !/^\d{6}$/.test(suppliedTotpCode))
     ) {
       return errorResponse(res, req, 400, 'INVALID_REQUEST', 'Valid email, password, and authenticator code are required');
     }
@@ -143,8 +109,9 @@ function createAuthRouter({ database }) {
       }
 
       const [users] = await connection.execute(
-        `SELECT id, name, email, password_hash, role, totp_secret_encrypted, mfa_enabled
-         FROM app_users WHERE email = ? AND active = TRUE LIMIT 1`,
+        `SELECT id, name, email, password_hash, role, officer_position,
+                totp_secret_encrypted, totp_last_used_step, mfa_enabled
+         FROM app_users WHERE email = ? AND active = TRUE LIMIT 1 FOR UPDATE`,
         [email.trim()],
       );
       const user = users[0];
@@ -152,10 +119,96 @@ function createAuthRouter({ database }) {
         password,
         user ? user.password_hash : await dummyPasswordHash,
       );
-      let codeMatches = false;
-      if (user && user.mfa_enabled && user.totp_secret_encrypted) {
+      if (user && user.role === 'ADMIN_TESTER' && production && passwordMatches) {
+        await connection.execute(
+          `UPDATE app_users SET active = FALSE WHERE id = ? AND role = 'ADMIN_TESTER'`,
+          [user.id],
+        );
+        await connection.execute(
+          `UPDATE app_sessions SET revoked_at = UTC_TIMESTAMP(3)
+           WHERE user_id = ? AND revoked_at IS NULL`,
+          [user.id],
+        );
+        await writeAudit(connection, {
+          actorType: 'SYSTEM',
+          action: 'ADMIN_TESTER_DEACTIVATED',
+          entityName: 'app_users',
+          recordId: user.id,
+          beforeValue: { role: 'ADMIN_TESTER', active: true },
+          afterValue: { role: 'ADMIN_TESTER', active: false },
+          reason: 'Production login safeguard',
+          requestId: req.requestId,
+        });
+        await connection.commit();
+        return errorResponse(res, req, 403, 'ACCOUNT_DISABLED', 'This temporary account is disabled in production');
+      }
+
+      if (
+        user &&
+        passwordMatches &&
+        user.role === 'OFFICER' &&
+        ['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(user.officer_position) &&
+        !user.mfa_enabled &&
+        !user.totp_secret_encrypted
+      ) {
+        const enrollmentToken = crypto.randomBytes(32).toString('base64url');
+        await connection.execute(
+          `UPDATE app_users
+           SET mfa_enrollment_token_hash = ?,
+               mfa_enrollment_expires_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? MINUTE)
+           WHERE id = ? AND active = TRUE AND mfa_enabled = FALSE`,
+          [hashSessionToken(enrollmentToken), MFA_ENROLLMENT_TIMEOUT_MINUTES, user.id],
+        );
+        await connection.execute(
+          `UPDATE auth_login_attempts SET failure_count = 0, locked_until = NULL
+           WHERE bucket_hash = ?`,
+          [bucketHash],
+        );
+        await writeAudit(connection, {
+          actorId: user.id,
+          action: 'MFA_ENROLLMENT_STARTED',
+          entityName: 'app_users',
+          recordId: user.id,
+          afterValue: {
+            actorRole: user.role,
+            officerPosition: user.officer_position,
+            expiresInMinutes: MFA_ENROLLMENT_TIMEOUT_MINUTES,
+          },
+          requestId: req.requestId,
+        });
+        await connection.commit();
+        return res.status(200).json({
+          data: {
+            mfaEnrollmentRequired: true,
+            enrollmentToken,
+            enrollmentExpiresInMinutes: MFA_ENROLLMENT_TIMEOUT_MINUTES,
+            user: {
+              id: user.id,
+              name: user.name,
+              email: user.email,
+              role: user.role,
+              officerPosition: user.officer_position,
+            },
+          },
+        });
+      }
+
+      let codeStep = null;
+      if (
+        user && user.mfa_enabled && user.totp_secret_encrypted &&
+        passwordMatches && /^\d{6}$/.test(suppliedTotpCode)
+      ) {
         const secret = decryptTotpSecret(user.totp_secret_encrypted, process.env.AUTH_ENCRYPTION_KEY);
-        codeMatches = verifyTotpCode(secret, totpCode);
+        codeStep = getTotpStep(secret, suppliedTotpCode, 1);
+      }
+      let codeMatches = false;
+      if (user && codeStep !== null) {
+        const [consumed] = await connection.execute(
+          `UPDATE app_users SET totp_last_used_step = ?
+           WHERE id = ? AND (totp_last_used_step IS NULL OR totp_last_used_step < ?)`,
+          [codeStep, user.id, codeStep],
+        );
+        codeMatches = consumed.affectedRows === 1;
       }
 
       if (!user || !user.mfa_enabled || !passwordMatches || !codeMatches) {
@@ -199,11 +252,43 @@ function createAuthRouter({ database }) {
          WHERE user_id = ? AND revoked_at IS NULL ORDER BY permission_code`,
         [user.id],
       );
+      const [replacementInvitations] = await connection.execute(
+        `SELECT id, replaces_admin_user_id FROM admin_invitations
+         WHERE created_user_id = ? AND status = 'SETUP_COMPLETE'
+           AND test_sign_in_at IS NULL
+         FOR UPDATE`,
+        [user.id],
+      );
+      const replacement = replacementInvitations[0];
+      if (replacement) {
+        await connection.execute(
+          `UPDATE admin_invitations
+           SET status = 'COMPLETED', test_sign_in_at = UTC_TIMESTAMP(3)
+           WHERE id = ?`,
+          [replacement.id],
+        );
+        await writeAudit(connection, {
+          actorId: user.id,
+          action: 'ADMIN_REPLACEMENT_TEST_SIGN_IN',
+          entityName: 'admin_invitations',
+          recordId: replacement.id,
+          afterValue: {
+            replacementAdminId: user.id,
+            actorRole: user.role,
+            officerPosition: user.officer_position,
+            replacedAdminDeactivated: false,
+            previousAdminPreserved: true,
+          },
+          reason: 'Previous Admin remains active until manually converted or deactivated',
+          requestId: req.requestId,
+        });
+      }
       await writeAudit(connection, {
         actorId: user.id,
         action: 'LOGIN_SUCCEEDED',
         entityName: 'app_sessions',
         recordId: sessionId,
+        afterValue: { actorRole: user.role },
         requestId: req.requestId,
       });
       await connection.commit();
@@ -215,6 +300,7 @@ function createAuthRouter({ database }) {
             name: user.name,
             email: user.email,
             role: user.role,
+            officerPosition: user.officer_position,
             permissions: permissionRows.map((row) => row.permission_code),
           },
           idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES,
@@ -235,59 +321,175 @@ function createAuthRouter({ database }) {
     }
   });
 
-  async function authenticate(req, res, next) {
-    const token = readCookie(req.get('cookie'), SESSION_COOKIE);
-    if (!token || token.length > 128) {
-      return errorResponse(res, req, 401, 'UNAUTHORIZED', 'Authentication is required');
+  router.post('/mfa/enrollment/complete', async (req, res, next) => {
+    const { enrollmentToken, totpSecret, totpCode } = req.body || {};
+    if (
+      typeof enrollmentToken !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(enrollmentToken) ||
+      typeof totpSecret !== 'string' ||
+      !/^[A-Z2-7]{32}$/.test(totpSecret) ||
+      typeof totpCode !== 'string' ||
+      !/^\d{6}$/.test(totpCode)
+    ) {
+      return errorResponse(res, req, 400, 'INVALID_REQUEST', 'A valid enrollment token, authenticator key, and current code are required');
+    }
+
+    try {
+      decodeKey(process.env.AUTH_ENCRYPTION_KEY, 'AUTH_ENCRYPTION_KEY');
+      decodeKey(process.env.AUTH_RATE_LIMIT_KEY, 'AUTH_RATE_LIMIT_KEY');
+    } catch (error) {
+      console.error('MFA enrollment configuration error:', error.message);
+      return errorResponse(res, req, 503, 'AUTH_UNAVAILABLE', 'Authentication is not configured');
     }
 
     let connection;
     try {
       connection = await getUtcConnection(database);
-      const tokenHash = hashSessionToken(token);
-      const [result] = await connection.execute(
-        `UPDATE app_sessions
-         SET last_activity_at = UTC_TIMESTAMP(3),
-             expires_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? MINUTE)
-         WHERE session_token_hash = ? AND revoked_at IS NULL AND expires_at > UTC_TIMESTAMP(3)
-           AND EXISTS (
-             SELECT 1 FROM app_users u WHERE u.id = app_sessions.user_id AND u.active = TRUE
-           )`,
-        [IDLE_TIMEOUT_MINUTES, tokenHash],
-      );
-      if (!result.affectedRows) {
-        return errorResponse(res, req, 401, 'UNAUTHORIZED', 'Authentication is required');
-      }
-
+      await connection.beginTransaction();
       const [users] = await connection.execute(
-        `SELECT u.id, u.name, u.email, u.role
-         FROM app_sessions s JOIN app_users u ON u.id = s.user_id
-         WHERE s.session_token_hash = ? AND s.revoked_at IS NULL AND u.active = TRUE`,
-        [tokenHash],
+        `SELECT id, name, email, role, officer_position, mfa_enabled
+         FROM app_users
+         WHERE mfa_enrollment_token_hash = ?
+           AND mfa_enrollment_expires_at > UTC_TIMESTAMP(3)
+           AND active = TRUE AND mfa_enabled = FALSE
+         LIMIT 1 FOR UPDATE`,
+        [hashSessionToken(enrollmentToken)],
       );
-      if (!users.length) {
-        return errorResponse(res, req, 401, 'UNAUTHORIZED', 'Authentication is required');
+      const user = users[0];
+      if (
+        !user ||
+        user.role !== 'OFFICER' ||
+        !['BOARD_CHAIR', 'BOARD_VICE_CHAIR'].includes(user.officer_position)
+      ) {
+        await connection.rollback();
+        return errorResponse(res, req, 400, 'INVALID_MFA_ENROLLMENT', 'The authenticator enrollment is invalid or expired');
       }
 
+      const bucketHash = createLoginBucket(user.email, req.ip || 'unknown', process.env.AUTH_RATE_LIMIT_KEY);
+      await connection.execute(
+        `INSERT IGNORE INTO auth_login_attempts
+           (bucket_hash, window_started_at, failure_count, locked_until)
+         VALUES (?, UTC_TIMESTAMP(3), 0, NULL)`,
+        [bucketHash],
+      );
+      const [attemptRows] = await connection.execute(
+        `SELECT failure_count, locked_until
+         FROM auth_login_attempts WHERE bucket_hash = ? FOR UPDATE`,
+        [bucketHash],
+      );
+      const attempt = attemptRows[0] || { failure_count: 0, locked_until: null };
+      if (attempt.locked_until && new Date(attempt.locked_until).getTime() > Date.now()) {
+        await connection.commit();
+        return errorResponse(
+          res,
+          req,
+          429,
+          'RATE_LIMITED',
+          'Too many failed authenticator enrollment attempts',
+          LOGIN_WINDOW_MINUTES * 60,
+        );
+      }
+
+      const codeStep = getTotpStep(totpSecret, totpCode, 0);
+      if (codeStep === null) {
+        const failures = (Number(attempt.failure_count) || 0) + 1;
+        const lock = failures >= MAX_LOGIN_FAILURES;
+        await connection.execute(
+          `UPDATE auth_login_attempts
+           SET failure_count = ?, locked_until = ${lock ? 'DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 15 MINUTE)' : 'NULL'}
+           WHERE bucket_hash = ?`,
+          [failures, bucketHash],
+        );
+        await writeAudit(connection, {
+          actorId: user.id,
+          action: 'MFA_ENROLLMENT_FAILED',
+          entityName: 'app_users',
+          recordId: user.id,
+          afterValue: { reason: 'INVALID_AUTHENTICATOR_CODE' },
+          requestId: req.requestId,
+        });
+        await connection.commit();
+        return errorResponse(
+          res,
+          req,
+          lock ? 429 : 401,
+          lock ? 'RATE_LIMITED' : 'INVALID_AUTHENTICATOR_CODE',
+          lock ? 'Too many failed authenticator enrollment attempts' : 'The authenticator code is invalid',
+          lock ? LOGIN_WINDOW_MINUTES * 60 : undefined,
+        );
+      }
+
+      await connection.execute(
+        `UPDATE app_users
+         SET totp_secret_encrypted = ?, totp_last_used_step = ?, mfa_enabled = TRUE,
+             mfa_enrollment_token_hash = NULL, mfa_enrollment_expires_at = NULL
+         WHERE id = ? AND active = TRUE AND mfa_enabled = FALSE`,
+        [
+          encryptTotpSecret(totpSecret, process.env.AUTH_ENCRYPTION_KEY),
+          codeStep,
+          user.id,
+        ],
+      );
+      const sessionToken = crypto.randomBytes(32).toString('base64url');
+      const sessionId = crypto.randomUUID();
+      await connection.execute(
+        `INSERT INTO app_sessions (id, user_id, session_token_hash, expires_at)
+         VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? MINUTE))`,
+        [sessionId, user.id, hashSessionToken(sessionToken), IDLE_TIMEOUT_MINUTES],
+      );
+      await connection.execute(
+        `UPDATE auth_login_attempts SET failure_count = 0, locked_until = NULL
+         WHERE bucket_hash = ?`,
+        [bucketHash],
+      );
       const [permissionRows] = await connection.execute(
         `SELECT permission_code FROM app_user_permissions
          WHERE user_id = ? AND revoked_at IS NULL ORDER BY permission_code`,
-        [users[0].id],
+        [user.id],
       );
-      req.user = {
-        ...users[0],
-        permissions: permissionRows.map((row) => row.permission_code),
-      };
-      req.sessionTokenHash = tokenHash;
-      return next();
+      await writeAudit(connection, {
+        actorId: user.id,
+        action: 'MFA_ENROLLMENT_COMPLETED',
+        entityName: 'app_users',
+        recordId: user.id,
+        afterValue: {
+          actorRole: user.role,
+          officerPosition: user.officer_position,
+          mfaEnabled: true,
+        },
+        requestId: req.requestId,
+      });
+      await writeAudit(connection, {
+        actorId: user.id,
+        action: 'LOGIN_SUCCEEDED',
+        entityName: 'app_sessions',
+        recordId: sessionId,
+        afterValue: { actorRole: user.role },
+        reason: 'First sign-in completed with authenticator enrollment',
+        requestId: req.requestId,
+      });
+      await connection.commit();
+      res.setHeader('Set-Cookie', sessionCookie(sessionToken, production));
+      return res.status(200).json({
+        data: {
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            officerPosition: user.officer_position,
+            permissions: permissionRows.map((row) => row.permission_code),
+          },
+          idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES,
+        },
+      });
     } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
       return next(error);
     } finally {
-      if (connection) {
-        connection.release();
-      }
+      if (connection) connection.release();
     }
-  }
+  });
 
   router.get('/me', authenticate, (req, res) => res.status(200).json({
     data: {

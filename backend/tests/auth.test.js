@@ -4,7 +4,11 @@ const { once } = require('node:events');
 const test = require('node:test');
 const OTPAuth = require('otpauth');
 const { createApp } = require('../src/app');
-const { requirePermission } = require('../src/middleware/authorization');
+const {
+  requireBoardOfficer,
+  requirePermission,
+  requireRole,
+} = require('../src/middleware/authorization');
 const {
   decryptTotpSecret,
   encryptTotpSecret,
@@ -12,7 +16,6 @@ const {
   verifyPassword,
   verifyTotpCode,
 } = require('../src/services/auth');
-const { requireRole } = require('../src/middleware/authorization');
 
 const encryptionKey = crypto.randomBytes(32).toString('base64');
 const rateLimitKey = crypto.randomBytes(32).toString('base64');
@@ -43,7 +46,7 @@ test('authenticator secrets are encrypted and time-based codes validate', () => 
   assert.throws(() => decryptTotpSecret(encrypted, crypto.randomBytes(32).toString('base64')));
 });
 
-test('successful staff login creates a secure opaque session and returns role permissions', async () => {
+test('replacement Admin test sign-in creates a session without deactivating the previous Admin', async () => {
   const passwordHash = await hashPassword('a-long-example-passphrase');
   const secret = new OTPAuth.Secret({ size: 20 });
   const totp = new OTPAuth.TOTP({
@@ -83,6 +86,12 @@ test('successful staff login creates a secure opaque session and returns role pe
       }
       if (sql.includes('SELECT permission_code')) {
         return [[{ permission_code: 'PRODUCT_READ' }], []];
+      }
+      if (sql.includes('FROM admin_invitations')) {
+        return [[{
+          id: '36a5f4b4-034d-4c79-8cf4-8e196613eb3a',
+          replaces_admin_user_id: 'a0c2214e-2c2f-4f69-985a-f888ab9042c9',
+        }], []];
       }
       if (sql.includes('INSERT INTO app_sessions')) {
         return [{ affectedRows: 1 }, []];
@@ -127,6 +136,172 @@ test('successful staff login creates a secure opaque session and returns role pe
     assert.equal(utcTimezoneSet, true);
     assert.ok(statements.some((sql) => sql.includes('INSERT INTO app_sessions')));
     assert.ok(statements.some((sql) => sql.includes('INSERT INTO audit_log')));
+    assert.ok(statements.some((sql) => sql.includes("SET status = 'COMPLETED'")));
+    assert.equal(statements.some((sql) => sql.includes('UPDATE app_users SET active = FALSE')), false);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    if (previousEncryptionKey === undefined) delete process.env.AUTH_ENCRYPTION_KEY;
+    else process.env.AUTH_ENCRYPTION_KEY = previousEncryptionKey;
+    if (previousRateLimitKey === undefined) delete process.env.AUTH_RATE_LIMIT_KEY;
+    else process.env.AUTH_RATE_LIMIT_KEY = previousRateLimitKey;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
+});
+
+test('Board Officer password sign-in returns an in-memory MFA enrollment challenge', async () => {
+  const passwordHash = await hashPassword('a-long-example-passphrase');
+  const user = {
+    id: '2c1f37f4-0933-4f4e-b3ba-b1eb187c54f6',
+    name: 'Board Chair',
+    email: 'chair@example.test',
+    password_hash: passwordHash,
+    role: 'OFFICER',
+    officer_position: 'BOARD_CHAIR',
+    totp_secret_encrypted: null,
+    totp_last_used_step: null,
+    mfa_enabled: 0,
+  };
+  const parameters = [];
+  const connection = {
+    async query() {},
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+    async execute(sql, values = []) {
+      parameters.push(...values);
+      if (sql.includes('SELECT failure_count')) {
+        return [[{ failure_count: 0, locked_until: null, window_active: 1 }], []];
+      }
+      if (sql.includes('FROM app_users WHERE email')) return [[user], []];
+      return [{ affectedRows: 1 }, []];
+    },
+  };
+  const database = {
+    async query() {
+      return [[{ ok: 1 }], []];
+    },
+    async getConnection() {
+      return connection;
+    },
+  };
+  const previousEncryptionKey = process.env.AUTH_ENCRYPTION_KEY;
+  const previousRateLimitKey = process.env.AUTH_RATE_LIMIT_KEY;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.AUTH_ENCRYPTION_KEY = encryptionKey;
+  process.env.AUTH_RATE_LIMIT_KEY = rateLimitKey;
+  process.env.NODE_ENV = 'test';
+  const server = createApp({ database }).listen(0, '127.0.0.1');
+
+  try {
+    await once(server, 'listening');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: user.email, password: 'a-long-example-passphrase' }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.data.mfaEnrollmentRequired, true);
+    assert.equal(body.data.enrollmentExpiresInMinutes, 10);
+    assert.match(body.data.enrollmentToken, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(parameters.includes(body.data.enrollmentToken), false);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    if (previousEncryptionKey === undefined) delete process.env.AUTH_ENCRYPTION_KEY;
+    else process.env.AUTH_ENCRYPTION_KEY = previousEncryptionKey;
+    if (previousRateLimitKey === undefined) delete process.env.AUTH_RATE_LIMIT_KEY;
+    else process.env.AUTH_RATE_LIMIT_KEY = previousRateLimitKey;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
+});
+
+test('Board Officer MFA enrollment encrypts the secret and creates the first session', async () => {
+  const secret = new OTPAuth.Secret({ size: 20 });
+  const totp = new OTPAuth.TOTP({
+    issuer: 'eNMRIS',
+    label: 'chair@example.test',
+    algorithm: 'SHA1',
+    digits: 6,
+    period: 30,
+    secret,
+  });
+  const enrollmentToken = crypto.randomBytes(32).toString('base64url');
+  const user = {
+    id: '2c1f37f4-0933-4f4e-b3ba-b1eb187c54f6',
+    name: 'Board Chair',
+    email: 'chair@example.test',
+    role: 'OFFICER',
+    officer_position: 'BOARD_CHAIR',
+    mfa_enabled: 0,
+  };
+  const statements = [];
+  let encryptedSecret;
+  const connection = {
+    async query() {},
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+    async execute(sql, values = []) {
+      statements.push(sql);
+      if (sql.includes('WHERE mfa_enrollment_token_hash = ?')) return [[user], []];
+      if (sql.includes('SELECT failure_count')) {
+        return [[{ failure_count: 0, locked_until: null }], []];
+      }
+      if (sql.includes('SET totp_secret_encrypted')) encryptedSecret = values[0];
+      if (sql.includes('SELECT permission_code')) return [[], []];
+      return [{ affectedRows: 1 }, []];
+    },
+  };
+  const database = {
+    async query() {
+      return [[{ ok: 1 }], []];
+    },
+    async getConnection() {
+      return connection;
+    },
+  };
+  const previousEncryptionKey = process.env.AUTH_ENCRYPTION_KEY;
+  const previousRateLimitKey = process.env.AUTH_RATE_LIMIT_KEY;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.AUTH_ENCRYPTION_KEY = encryptionKey;
+  process.env.AUTH_RATE_LIMIT_KEY = rateLimitKey;
+  process.env.NODE_ENV = 'test';
+  const server = createApp({ database }).listen(0, '127.0.0.1');
+
+  try {
+    await once(server, 'listening');
+    const response = await fetch(
+      `http://127.0.0.1:${server.address().port}/api/v1/auth/mfa/enrollment/complete`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentToken,
+          totpSecret: secret.base32,
+          totpCode: totp.generate(),
+        }),
+      },
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.data.user.id, user.id);
+    assert.equal(body.data.user.role, 'OFFICER');
+    assert.match(response.headers.get('set-cookie'), /HttpOnly; SameSite=Lax/);
+    assert.equal(decryptTotpSecret(encryptedSecret, encryptionKey), secret.base32);
+    assert.ok(statements.some((sql) => sql.includes('mfa_enrollment_token_hash = ?')));
+    assert.ok(statements.some((sql) => sql.includes('INSERT INTO app_sessions')));
+    assert.equal(statements.filter((sql) => sql.includes('INSERT INTO app_sessions')).length, 1);
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
@@ -160,6 +335,62 @@ test('role guard rejects callers without the required role', () => {
 
   assert.equal(status, 403);
   assert.equal(responseBody.error.code, 'FORBIDDEN');
+});
+
+test('Board Officer guard accepts only the designated Chair positions', () => {
+  let continued = false;
+  requireBoardOfficer({
+    user: { role: 'OFFICER', officerPosition: 'BOARD_CHAIR' },
+  }, {}, () => {
+    continued = true;
+  });
+  assert.equal(continued, true);
+
+  let status;
+  const response = {
+    status(value) {
+      status = value;
+      return this;
+    },
+    json() {
+      return this;
+    },
+  };
+  requireBoardOfficer({
+    user: { role: 'OFFICER', officerPosition: null },
+    requestId: 'request-id',
+  }, response, () => {
+    assert.fail('A generic Officer must not approve Admin invitations');
+  });
+  assert.equal(status, 403);
+
+  let testerStatus;
+  requireBoardOfficer({
+    user: { role: 'ADMIN_TESTER', officerPosition: null },
+    requestId: 'request-id',
+  }, {
+    status(value) {
+      testerStatus = value;
+      return this;
+    },
+    json() {
+      return this;
+    },
+  }, () => {
+    assert.fail('An Admin tester must not approve invitations');
+  });
+  assert.equal(testerStatus, 403);
+});
+
+test('ADMIN_TESTER may pass the Admin role guard but not the Board Officer guard', () => {
+  let continued = false;
+  requireRole('ADMIN')({
+    user: { role: 'ADMIN_TESTER' },
+    requestId: 'request-id',
+  }, {}, () => {
+    continued = true;
+  });
+  assert.equal(continued, true);
 });
 
 test('login is rate-limited before looking up credentials', async () => {

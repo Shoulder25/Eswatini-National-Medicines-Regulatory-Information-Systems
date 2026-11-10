@@ -11,6 +11,8 @@ servers:
 tags:
   - name: Authentication
     description: Staff login and external client token issuance
+  - name: Admin replacement
+    description: Private invitation, Board Officer approval, and replacement Admin enrollment
   - name: Products
     description: Staff product search, maintenance, and CMS workbook exchange
   - name: Registrations
@@ -31,7 +33,7 @@ paths:
       tags: [Authentication]
       operationId: login
       summary: Authenticate an MRA staff user
-      description: Requires email, password, and an authenticator-app time-based one-time password (TOTP). Sets a Secure, HttpOnly, SameSite session cookie.
+      description: Requires email and password. Enrolled users also provide a TOTP code; an unenrolled Board Officer receives a short-lived first-sign-in enrollment challenge instead of a session.
       security: []
       requestBody:
         required: true
@@ -41,7 +43,40 @@ paths:
               $ref: '#/components/schemas/LoginRequest'
       responses:
         '200':
-          description: Login successful
+          description: Login successful; an unenrolled Board Officer instead receives an enrollment challenge
+          headers:
+            Set-Cookie:
+              description: Opaque session cookie; 20-minute idle timeout. Absent when first-sign-in enrollment is required.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SessionResponse'
+                  - $ref: '#/components/schemas/OfficerMfaEnrollmentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /api/v1/auth/mfa/enrollment/complete:
+    post:
+      tags: [Authentication]
+      operationId: completeOfficerMfaEnrollment
+      summary: Complete first-sign-in Board Officer authenticator enrollment
+      description: Consumes a short-lived, single-use enrollment challenge returned after password verification. The challenge is held by the client in memory, not in the URL or local storage.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficerMfaEnrollmentRequest'
+      responses:
+        '200':
+          description: Authenticator enrolled and staff session created
           headers:
             Set-Cookie:
               description: Opaque session cookie; 20-minute idle timeout.
@@ -85,6 +120,182 @@ paths:
                 $ref: '#/components/schemas/SessionResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin-invitations:
+    get:
+      tags: [Admin replacement]
+      operationId: listAdminInvitations
+      summary: List Admin replacement requests
+      description: Admins and ADMIN_TESTER users see their own requests; Board Chair and Vice Chair see the review queue. Setup tokens are never returned.
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: Invitation records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminInvitation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Admin replacement]
+      operationId: createAdminInvitation
+      summary: Request an Admin replacement
+      description: Admin or ADMIN_TESTER. Testers may invite but cannot approve. Exact email-domain allowlisting is enforced. Creates a pending invitation, not an account.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminInvitationCreateRequest'
+      responses:
+        '201':
+          description: Invitation submitted for independent Board Officer review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/admin-invitations/{invitationId}/decision:
+    post:
+      tags: [Admin replacement]
+      operationId: decideAdminInvitation
+      summary: Approve or reject a replacement Admin
+      description: Board Chair or Vice Chair only. Requires a decision reason and fresh authenticator code. Either Officer can decide independently; self-approval is blocked.
+      security:
+        - staffSession: []
+      parameters:
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminInvitationDecisionRequest'
+      responses:
+        '200':
+          description: Decision recorded; approval email delivery is reported without exposing the setup token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationDecisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/admin-invitations/{invitationId}/reissue:
+    post:
+      tags: [Admin replacement]
+      operationId: reissueAdminSetupLink
+      summary: Reissue a failed or expired setup link
+      description: Only the approving Board Officer may reissue the link. A fresh authenticator code and reason are required; prior tokens are invalidated.
+      security:
+        - staffSession: []
+      parameters:
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSetupReissueRequest'
+      responses:
+        '200':
+          description: New setup email delivery result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationDecisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/admin-invitations/setup/inspect:
+    post:
+      tags: [Admin replacement]
+      operationId: inspectAdminSetupToken
+      summary: Validate a replacement Admin setup token
+      description: Public single-use-token check. Token is accepted only in the request body and is never echoed in the response.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{43}$'
+      responses:
+        '200':
+          description: Invitation recipient and expiry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSetupInspectionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/v1/admin-invitations/setup/complete:
+    post:
+      tags: [Admin replacement]
+      operationId: completeAdminSetup
+      summary: Enroll the invited replacement Admin
+      description: Public, single-use enrollment with a 24-hour setup token, password, encrypted authenticator secret, and current time-based one-time password (TOTP). Does not deactivate the previous Admin.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSetupCompleteRequest'
+      responses:
+        '201':
+          description: Account enrolled; successful first sign-in is still required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSetupCompleteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /api/v1/oauth/token:
     post:
       tags: [Authentication]
@@ -828,7 +1039,7 @@ components:
           format: uuid
     LoginRequest:
       type: object
-      required: [email, password, totpCode]
+      required: [email, password]
       properties:
         email:
           type: string
@@ -838,8 +1049,58 @@ components:
           format: password
         totpCode:
           type: string
-          pattern: '^[0-9]{6,8}$'
-          description: Numeric code generated by a time-based one-time password (TOTP) authenticator.
+          pattern: '^[0-9]{6}$'
+          description: Required for enrolled accounts; omitted for first-time Board Officer authenticator enrollment.
+    OfficerMfaEnrollmentRequest:
+      type: object
+      required: [enrollmentToken, totpSecret, totpCode]
+      properties:
+        enrollmentToken:
+          type: string
+          description: Single-use challenge received in the password-authenticated login response.
+        totpSecret:
+          type: string
+          pattern: '^[A-Z2-7]{32}$'
+          description: Authenticator secret; encrypted at rest by the API.
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Current code generated from the submitted TOTP secret.
+    OfficerMfaEnrollmentResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [mfaEnrollmentRequired, enrollmentToken, enrollmentExpiresInMinutes, user]
+          properties:
+            mfaEnrollmentRequired:
+              type: boolean
+              const: true
+            enrollmentToken:
+              type: string
+              description: Short-lived one-time challenge; never put in a URL or persistent browser storage.
+            enrollmentExpiresInMinutes:
+              type: integer
+              const: 10
+            user:
+              type: object
+              required: [id, name, email, role, officerPosition]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                role:
+                  type: string
+                  const: OFFICER
+                officerPosition:
+                  type: string
+                  enum: [BOARD_CHAIR, BOARD_VICE_CHAIR]
     UserSummary:
       type: object
       required: [id, name, email, role, permissions]
@@ -854,11 +1115,181 @@ components:
           format: email
         role:
           type: string
-          enum: [ADMIN, OFFICER]
+          enum: [ADMIN, ADMIN_TESTER, OFFICER]
+        officerPosition:
+          type: [string, 'null']
+          enum: [BOARD_CHAIR, BOARD_VICE_CHAIR, null]
         permissions:
           type: array
           items:
             type: string
+    AdminInvitationCreateRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        email:
+          type: string
+          format: email
+          maxLength: 254
+    AdminInvitationDecisionRequest:
+      type: object
+      required: [decision, reason, totpCode]
+      properties:
+        decision:
+          type: string
+          enum: [APPROVE, REJECT]
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    AdminSetupReissueRequest:
+      type: object
+      required: [reason, totpCode]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    AdminInvitation:
+      type: object
+      required: [id, invitee_name, invitee_email, status, approval_expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        invitee_name:
+          type: string
+        invitee_email:
+          type: string
+          format: email
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, REJECTED, SETUP_COMPLETE, COMPLETED, EXPIRED]
+        approval_expires_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: [string, 'null']
+          format: date-time
+        decision_officer_position:
+          type: [string, 'null']
+          enum: [BOARD_CHAIR, BOARD_VICE_CHAIR, null]
+        decision_reason:
+          type: [string, 'null']
+        delivery_status:
+          type: string
+          enum: [NOT_SENT, SENT, FAILED]
+        setup_token_expires_at:
+          type: [string, 'null']
+          format: date-time
+        setup_completed_at:
+          type: [string, 'null']
+          format: date-time
+        test_sign_in_at:
+          type: [string, 'null']
+          format: date-time
+        replaced_admin_deactivated_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    AdminInvitationCreateResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, status, approvalExpiresInDays]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              const: PENDING_APPROVAL
+            approvalExpiresInDays:
+              type: integer
+              const: 7
+    AdminInvitationDecisionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, status]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [APPROVED, REJECTED]
+            deliveryStatus:
+              type: [string, 'null']
+              enum: [SENT, FAILED, null]
+            message:
+              type: string
+    AdminSetupInspectionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [invitationId, name, email, expiresAt]
+          properties:
+            invitationId:
+              type: string
+              format: uuid
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            expiresAt:
+              type: string
+              format: date-time
+    AdminSetupCompleteRequest:
+      type: object
+      required: [token, password, totpSecret, totpCode]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 1024
+        totpSecret:
+          type: string
+          pattern: '^[A-Z2-7]{32}$'
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    AdminSetupCompleteResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [status, message]
+          properties:
+            status:
+              type: string
+              const: SETUP_COMPLETE
+            message:
+              type: string
     SessionResponse:
       type: object
       required: [data]

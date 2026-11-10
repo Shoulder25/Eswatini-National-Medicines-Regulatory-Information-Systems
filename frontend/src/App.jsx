@@ -2,6 +2,9 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
+import AdminInvitationsPage from './pages/AdminInvitationsPage.jsx';
+import AdminSetupPage from './pages/AdminSetupPage.jsx';
+import OfficerMfaEnrollmentPage from './pages/OfficerMfaEnrollmentPage.jsx';
 
 function LoadingScreen({ message = 'Checking your secure session…' }) {
   return (
@@ -20,7 +23,7 @@ function RootRedirect() {
   return <Navigate to={user ? '/dashboard' : '/login'} replace />;
 }
 
-function ProtectedDashboard() {
+function ProtectedDashboard({ children }) {
   const { phase, error, retry, user } = useAuth();
   if (phase === 'loading') return <LoadingScreen />;
 
@@ -42,7 +45,7 @@ function ProtectedDashboard() {
   }
 
   if (!user) return <Navigate to="/login" replace />;
-  return <DashboardPage />;
+  return children || <DashboardPage />;
 }
 
 export default function App() {
@@ -50,7 +53,17 @@ export default function App() {
     <Routes>
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/setup-admin" element={<AdminSetupPage />} />
+      <Route path="/enroll-officer-mfa" element={<OfficerMfaEnrollmentPage />} />
       <Route path="/dashboard" element={<ProtectedDashboard />} />
+      <Route
+        path="/admin-invitations"
+        element={(
+          <ProtectedDashboard>
+            <AdminInvitationsPage />
+          </ProtectedDashboard>
+        )}
+      />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

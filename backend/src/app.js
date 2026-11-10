@@ -2,6 +2,8 @@ const express = require('express');
 const { createHealthRouter } = require('./routes/health');
 const { createAuthRouter } = require('./routes/auth');
 const { randomUUID } = require('node:crypto');
+const { createAdminInvitationRouter } = require('./routes/admin-invitations');
+const { createSessionMiddleware } = require('./middleware/session');
 
 function createApp({ database }) {
   if (!database || typeof database.query !== 'function') {
@@ -35,6 +37,22 @@ function createApp({ database }) {
   app.use('/health', createHealthRouter(database));
   if (typeof database.getConnection === 'function') {
     app.use('/api/v1/auth', createAuthRouter({ database }));
+    app.use(
+      '/api/v1/admin-invitations',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createAdminInvitationRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
   }
 
   app.use((req, res) => {
@@ -50,6 +68,24 @@ function createApp({ database }) {
   app.use((error, req, res, next) => {
     if (res.headersSent) {
       return next(error);
+    }
+
+    const schemaMessage = String(error.sqlMessage || '');
+    const migrationRequired = (
+      error.code === 'ER_NO_SUCH_TABLE' &&
+      /admin_invitations|auth_login_attempts/i.test(schemaMessage)
+    ) || (
+      error.code === 'ER_BAD_FIELD_ERROR' &&
+      /officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at/i.test(schemaMessage)
+    );
+    if (migrationRequired) {
+      return res.status(503).json({
+        error: {
+          code: 'AUTH_SCHEMA_REQUIRED',
+          message: 'Apply the required authentication database migrations before using this endpoint',
+        },
+        requestId: req.requestId,
+      });
     }
 
     const status = error.status === 400 ? 400 : 500;

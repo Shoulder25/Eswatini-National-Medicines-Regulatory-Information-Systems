@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext.jsx';
 
@@ -41,9 +41,16 @@ export default function DashboardPage() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4 sm:px-8">
           <BrandMark />
           <div className="flex items-center gap-3">
+            {(user.role === 'ADMIN' || user.role === 'ADMIN_TESTER' || user.role === 'OFFICER') && (
+              <Link className="button-secondary hidden sm:inline-flex" to="/admin-invitations">
+                {user.role === 'OFFICER' ? 'Review Admin requests' : 'Replace Admin'}
+              </Link>
+            )}
             <div className="hidden text-right sm:block">
               <p className="text-sm font-semibold text-ink">{user.name}</p>
-              <p className="text-xs text-slate-500">{user.role}</p>
+              <p className="text-xs text-slate-500">
+                {user.role}{user.officerPosition ? ` · ${user.officerPosition.replaceAll('_', ' ')}` : ''}
+              </p>
             </div>
             <div className="grid h-10 w-10 place-items-center rounded-full bg-teal/10 text-sm font-bold text-teal" aria-hidden="true">
               {firstName.charAt(0).toUpperCase()}
@@ -95,6 +102,12 @@ export default function DashboardPage() {
             <p className="mt-1 text-sm text-slate-600">Sign out when leaving a shared device.</p>
           </article>
         </section>
+
+        {(user.role === 'ADMIN' || user.role === 'ADMIN_TESTER' || user.role === 'OFFICER') && (
+          <Link className="button-secondary mt-6 sm:hidden" to="/admin-invitations">
+            {user.role === 'OFFICER' ? 'Review Admin requests' : 'Request Admin replacement'}
+          </Link>
+        )}
 
         <section className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:justify-between sm:p-8">

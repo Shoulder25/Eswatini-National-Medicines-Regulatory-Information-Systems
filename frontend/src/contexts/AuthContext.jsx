@@ -1,5 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { getCurrentUser, login, logout } from '../services/auth.js';
+import {
+  completeOfficerMfaEnrollment as completeOfficerEnrollment,
+  getCurrentUser,
+  login,
+  logout,
+} from '../services/auth.js';
 
 const AuthContext = createContext(null);
 
@@ -8,6 +13,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState(20);
   const [error, setError] = useState(null);
+  const [pendingMfaEnrollment, setPendingMfaEnrollment] = useState(null);
 
   const refresh = useCallback(async () => {
     setPhase('loading');
@@ -54,16 +60,43 @@ export function AuthProvider({ children }) {
   }, []);
 
   const signIn = useCallback(async (credentials) => {
-    const session = await login(credentials);
+    const result = await login(credentials);
+    if (result.mfaEnrollmentRequired) {
+      setPendingMfaEnrollment({
+        token: result.enrollmentToken,
+        user: result.user,
+        expiresInMinutes: result.enrollmentExpiresInMinutes,
+      });
+      return { mfaEnrollmentRequired: true };
+    }
+    const session = result;
     setUser(session.user);
     setIdleTimeoutMinutes(session.idleTimeoutMinutes);
+    setPendingMfaEnrollment(null);
     setError(null);
     setPhase('authenticated');
   }, []);
 
+  const completeMfaEnrollment = useCallback(async ({ totpSecret, totpCode }) => {
+    if (!pendingMfaEnrollment) {
+      throw new Error('The authenticator enrollment has expired. Sign in again to restart.');
+    }
+    const session = await completeOfficerEnrollment({
+      enrollmentToken: pendingMfaEnrollment.token,
+      totpSecret,
+      totpCode,
+    });
+    setUser(session.user);
+    setIdleTimeoutMinutes(session.idleTimeoutMinutes);
+    setPendingMfaEnrollment(null);
+    setError(null);
+    setPhase('authenticated');
+  }, [pendingMfaEnrollment]);
+
   const signOut = useCallback(async () => {
     await logout();
     setUser(null);
+    setPendingMfaEnrollment(null);
     setPhase('anonymous');
   }, []);
 
@@ -72,10 +105,23 @@ export function AuthProvider({ children }) {
     user,
     error,
     idleTimeoutMinutes,
+    pendingMfaEnrollment,
+    refresh,
+    retry: refresh,
+    signIn,
+    completeMfaEnrollment,
+    signOut,
+  }), [
+    phase,
+    user,
+    error,
+    idleTimeoutMinutes,
+    pendingMfaEnrollment,
     refresh,
     signIn,
+    completeMfaEnrollment,
     signOut,
-  }), [phase, user, error, idleTimeoutMinutes, refresh, signIn, signOut]);
+  ]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

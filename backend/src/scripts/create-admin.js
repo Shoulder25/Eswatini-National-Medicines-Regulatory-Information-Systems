@@ -1,51 +1,33 @@
 require('dotenv').config();
 
 const crypto = require('node:crypto');
-const readlineCore = require('node:readline');
 const readline = require('node:readline/promises');
 const { stdin, stdout } = require('node:process');
 const OTPAuth = require('otpauth');
 const database = require('../config/database');
 const { getUtcConnection } = require('../config/connection');
-const { decodeKey, encryptTotpSecret, hashPassword, verifyTotpCode } = require('../services/auth');
+const { readHidden } = require('./prompt');
+const {
+  decodeKey,
+  encryptTotpSecret,
+  getTotpStep,
+  hashPassword,
+} = require('../services/auth');
+const { writeAudit } = require('../services/audit');
+const { validateEmailAddress } = require('../services/email-domain');
 
-function readHidden(prompt) {
-  if (!stdin.isTTY || typeof stdin.setRawMode !== 'function') {
-    return Promise.reject(new Error('Run this command from an interactive terminal'));
+async function recordRejectedEmail(address, reason) {
+  const connection = await getUtcConnection(database);
+  try {
+    await writeAudit(connection, {
+      action: 'EMAIL_ADDRESS_REJECTED',
+      entityName: 'app_users',
+      afterValue: { address, role: 'ADMIN', reason },
+      reason,
+    });
+  } finally {
+    connection.release();
   }
-
-  return new Promise((resolve, reject) => {
-    let value = '';
-    stdout.write(prompt);
-    readlineCore.emitKeypressEvents(stdin);
-    stdin.setRawMode(true);
-    stdin.resume();
-
-    function finish(error) {
-      stdin.setRawMode(false);
-      stdin.removeListener('keypress', onKeypress);
-      stdout.write('\n');
-      if (error) {
-        reject(error);
-      } else {
-        resolve(value);
-      }
-    }
-
-    function onKeypress(character, key) {
-      if (key && key.ctrl && key.name === 'c') {
-        finish(new Error('Cancelled'));
-      } else if (key && (key.name === 'return' || key.name === 'enter')) {
-        finish();
-      } else if (key && key.name === 'backspace') {
-        value = value.slice(0, -1);
-      } else if (character && !key.ctrl && !key.meta) {
-        value += character;
-      }
-    }
-
-    stdin.on('keypress', onKeypress);
-  });
 }
 
 async function main() {
@@ -54,17 +36,23 @@ async function main() {
 
   const prompt = readline.createInterface({ input: stdin, output: stdout });
   let name;
-  let email;
+  let emailInput;
   try {
     name = (await prompt.question('Admin full name: ')).trim();
-    email = (await prompt.question('Admin email: ')).trim().toLowerCase();
+    emailInput = await prompt.question('Admin email: ');
   } finally {
     prompt.close();
   }
 
-  if (!name || name.length > 160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-    throw new Error('Provide a valid name and email address');
+  const emailResult = validateEmailAddress(emailInput);
+  if (!emailResult.valid) {
+    await recordRejectedEmail(emailInput, emailResult.reason);
+    throw new Error('Admin email was rejected by the configured email-domain policy');
   }
+  if (!name || name.length > 160) {
+    throw new Error('Provide a valid name');
+  }
+  const email = emailResult.email;
 
   const password = await readHidden('Admin password (at least 12 characters): ');
   const confirmation = await readHidden('Confirm password: ');
@@ -85,7 +73,8 @@ async function main() {
   stdout.write('\nAdd this authenticator setup URI to your authenticator app:\n');
   stdout.write(`${totp.toString()}\n`);
   const code = await readHidden('Enter the current 6-digit authenticator code: ');
-  if (!verifyTotpCode(totpSecret.base32, code)) {
+  const totpStep = getTotpStep(totpSecret.base32, code, 0);
+  if (totpStep === null) {
     throw new Error('Authenticator code is invalid; no administrator was created');
   }
 
@@ -111,26 +100,25 @@ async function main() {
     const passwordHash = await hashPassword(password);
     await connection.execute(
       `INSERT INTO app_users
-         (id, name, email, password_hash, role, totp_secret_encrypted, mfa_enabled)
-       VALUES (?, ?, ?, ?, 'ADMIN', ?, TRUE)`,
+         (id, name, email, password_hash, role, officer_position,
+          totp_secret_encrypted, totp_last_used_step, mfa_enabled)
+       VALUES (?, ?, ?, ?, 'ADMIN', NULL, ?, ?, TRUE)`,
       [
         userId,
         name,
         email,
         passwordHash,
         encryptTotpSecret(totpSecret.base32, process.env.AUTH_ENCRYPTION_KEY),
+        totpStep,
       ],
     );
-    await connection.execute(
-      `INSERT INTO audit_log
-         (id, actor_type, action, entity_name, record_id, after_value)
-       VALUES (?, 'SYSTEM', 'ADMIN_BOOTSTRAPPED', 'app_users', ?, ?)`,
-      [
-        crypto.randomUUID(),
-        userId,
-        JSON.stringify({ email, role: 'ADMIN' }),
-      ],
-    );
+    await writeAudit(connection, {
+      action: 'ADMIN_BOOTSTRAPPED',
+      entityName: 'app_users',
+      recordId: userId,
+      afterValue: { email, role: 'ADMIN', mfaEnabled: true },
+      reason: 'Trusted local bootstrap command',
+    });
     await connection.commit();
     stdout.write(`Administrator account created for ${email}.\n`);
   } catch (error) {
@@ -141,11 +129,13 @@ async function main() {
       await connection.execute('SELECT RELEASE_LOCK(?)', ['enmris_bootstrap_admin']);
     }
     connection.release();
-    await database.end();
   }
 }
 
 main().catch((error) => {
   console.error(`Administrator setup failed: ${error.message}`);
   process.exitCode = 1;
-});
+}).finally(() => database.end().catch((error) => {
+  console.error(`Could not close the database pool: ${error.message}`);
+  process.exitCode = 1;
+}));

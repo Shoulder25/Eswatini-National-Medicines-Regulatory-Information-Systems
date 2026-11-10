@@ -47,6 +47,13 @@ export function login({ email, password, totpCode }) {
   });
 }
 
+export function completeOfficerMfaEnrollment({ enrollmentToken, totpSecret, totpCode }) {
+  return request('/mfa/enrollment/complete', {
+    method: 'POST',
+    body: { enrollmentToken, totpSecret, totpCode },
+  });
+}
+
 export function getCurrentUser() {
   return request('/me');
 }

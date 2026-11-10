@@ -18,23 +18,50 @@ database/    Numbered MySQL schema and seed scripts
 docs/        Requirements, design, interface, testing, and user documentation
 ```
 
-The database schema and API contract are established. Backend work is beginning
-with staff authentication and medicine-register search. Use synthetic data for
-development until MRA data is approved for use.
+The database schema and API contract are established. Staff authentication and
+the replacement-Admin approval workflow are implemented; medicine-register
+search is the next feature. Use synthetic data for development until MRA data is
+approved for use.
 
 ## Set up the backend
 
-1. In MySQL Workbench, run `database/01_schema.sql`, then `database/02_seed.sql`.
+1. In MySQL Workbench, on a fresh database run `database/01_schema.sql`, then
+   `database/02_seed.sql`. On an existing database, run
+   `database/03_auth_login_attempts.sql` and then
+   `database/04_admin_invitation_workflow.sql` before restarting the updated
+   backend. If the existing database does not already have
+   `auth_login_attempts`, apply `database/03_auth_login_attempts.sql` first;
+   then apply `database/04_admin_invitation_workflow.sql` once, followed by
+   `database/05_admin_tester_and_officer_mfa.sql` once. Migration 05 depends on
+   04. Do not rerun numbered migrations or run the fresh-install schema over
+   an existing DB.
    To verify the import, run
    `SELECT COUNT(*) FROM enmris.products;` and
    `SELECT COUNT(*) FROM enmris.product_programmes;` (expected: 19 and 18).
-   For an existing database, also run `database/03_auth_login_attempts.sql`.
-2. Create a restricted MySQL application account in Workbench. For this
-   authentication slice, grant `SELECT` and `INSERT` on `app_users` and
-   `app_user_permissions`; `SELECT`, `INSERT`, and `UPDATE` on `app_sessions`
-   and `auth_login_attempts`; and `INSERT`/`SELECT` on `audit_log`. Do not grant
-   the application account `UPDATE` or `DELETE` on `audit_log`.
-3. From `backend`, copy `.env.example` to `.env`, then set the database values.
+2. Create a restricted MySQL application account in Workbench. It needs
+   `SELECT`/`INSERT` on `app_users`, column-scoped `UPDATE` on
+   `app_users.totp_last_used_step` and `app_users.active`,
+   `SELECT`/`INSERT`/`UPDATE` on `app_sessions`, `auth_login_attempts`, and
+   `admin_invitations`, `SELECT` on `app_user_permissions`, and `SELECT`/`INSERT`
+   on `audit_log`. Grant column-scoped `UPDATE` on `app_users` for
+   `totp_secret_encrypted`, `totp_last_used_step`, `mfa_enrollment_token_hash`,
+   `mfa_enrollment_expires_at`, `mfa_enabled`, and `active`; do not grant the
+   application account `UPDATE` on `role` or `UPDATE`/`DELETE` on `audit_log`.
+   The one-time tester scripts use a separately prompted maintenance account.
+3. From `backend`, copy `.env.example` to `.env`, then set the database values
+   and `ALLOWED_EMAIL_DOMAINS` to the exact approved email domains (comma
+   separated, without wildcards). Configure `SMTP_HOST`, `SMTP_PORT`,
+   `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`, and `APP_BASE_URL` for email delivery.
+   For this temporary test, set `ALLOWED_EMAIL_DOMAINS=ethereal.email`,
+   `SMTP_HOST=smtp.ethereal.email`, `SMTP_PORT=587`, and
+   `MAIL_FROM=no-reply@ethereal.email`. Keep the Ethereal account's
+   `SMTP_USER` and `SMTP_PASS` only in the ignored `backend/.env`; never commit
+   or print them. Nodemailer sends to the intended invitee address, and the
+   test message is viewed in that Ethereal account's Messages page. Replace the
+   test domain and credentials with MRA-approved values before production.
+   For other development SMTP hosts, set an allowlisted `DEV_TEST_INBOX`.
+   `DEV_TEST_EMAIL_DOMAINS` is for local testing only and is rejected in
+   production. Do not configure `DEV_TEST_INBOX` in production.
    Generate two separate keys with
    `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"`
    and set `AUTH_ENCRYPTION_KEY` and `AUTH_RATE_LIMIT_KEY`. Keep these keys
@@ -46,7 +73,13 @@ development until MRA data is approved for use.
    authenticator setup URI. Add it to an authenticator app and confirm the
    current time-based one-time password (TOTP) when prompted. The URI contains a
    secret: do not share or save it in source control.
-6. Start the server with `npm start`. In PowerShell, check readiness with
+6. After the first Admin exists, run `npm run officer:bootstrap` twice, once
+   for each position: `BOARD_CHAIR` and `BOARD_VICE_CHAIR`. Each command prompts
+   for the Officer's name, allowlisted email, and password. Officers enroll an
+   authenticator during their first sign-in. Create one position at a time; the
+   database prevents duplicate positions. These are local bootstrap operations,
+   not public sign-up.
+7. Start the server with `npm start`. In PowerShell, check readiness with
    `Invoke-RestMethod http://localhost:3000/health`. A ready response reports
    both the API and database as `ok`; a database connection failure returns
    HTTP 503.
@@ -65,47 +98,117 @@ production requests; configure HTTPS at the reverse proxy as well.
    `/api` requests to the backend; the browser session remains in an
    HttpOnly cookie and is not stored in local storage.
 
-The interface supports staff sign-in, session restoration, and sign-out. If
+The interface supports staff sign-in, first-sign-in Officer authenticator
+enrollment, session restoration, sign-out, and replacement-Admin request/review screens. If
 `APP_ORIGIN` is set in `backend/.env`, set it to `http://localhost:5173` for
-local frontend development so the sign-out origin check accepts the request.
+local frontend development so cookie-authenticated mutations pass the
+same-origin check.
+
+## Replace an Admin
+
+There is deliberately no public Admin sign-up page. The current Admin submits a
+replacement request from **Replace Admin** in the dashboard. The invitation is
+not an account and cannot sign in. Either enrolled Board Officer may approve or
+reject it independently, with a reason and a fresh authenticator code. The
+inviter and invitee cannot approve their own appointment.
+
+The current Admin's own email domain must also be on the allowlist before
+requesting a replacement.
+
+Approval issues a single-use setup link that expires after 24 hours. With
+Ethereal SMTP, the intended recipient is shown in the Ethereal Messages page;
+with other development SMTP hosts, mail is routed to `DEV_TEST_INBOX`. In
+production it goes to the allowlisted invitee address over configured SMTP.
+The token is stored only as a hash and is never returned by the API or written
+to logs. The invitee sets a password and enrolls an authenticator through the
+link. A successful first sign-in records the test but does **not** deactivate
+the existing Admin.
+If email delivery fails or the link expires, only the approving Officer may
+reissue it; reissue invalidates the previous link.
+
+### Temporary Admin tester handover
+
+After the replacement Admin has enrolled MFA and completed a successful
+test sign-in, run the separate manual `npm run admin-tester:convert` command
+from `backend` to convert the original Admin to `ADMIN_TESTER`. It prompts for
+the target and replacement Admin, operator, reason, exact confirmation, and a
+hidden maintenance-MySQL password; it does not take credentials as arguments
+or save them. The original password and MFA credentials are retained, and the
+conversion is audited. The tester can submit invitations but cannot approve
+them, is excluded from active-Admin counts, and is automatically disabled with
+sessions revoked if found during production startup. The server logs a warning
+while an active tester exists.
+
+Before production, run `npm run admin-tester:deactivate` as a separate manual
+cleanup. It requires the verified replacement Admin to be the only active
+`ADMIN`, deactivates (never deletes) the tester, revokes its sessions, and
+records the action in `audit_log`. Both commands refuse to run with
+`NODE_ENV=production`. The conversion/cleanup MySQL maintenance account needs
+only the specific access required to lock and update `app_users`/`app_sessions`
+and insert into `audit_log`; do not grant those role-change privileges to the
+normal application account.
+
+### Requested Ethereal test data
+
+The temporary test participants are Chairman Kade Bechtelar
+(`kade.bechtelar@ethereal.email`), Vice Chairman Jammie Toy
+(`jammie.toy82@ethereal.email`), and replacement Admin Brionna Reichert
+(`brionna.reichert@ethereal.email`). Run `npm run officer:bootstrap` twice and
+enter each Officer's position, name, and email when prompted. Each run asks for
+that Officer's password in a hidden prompt; do not put passwords in command
+arguments, scripts, or files. Each Officer enrolls an authenticator at first
+sign-in. Keep the existing Admin account unchanged, then invite Brionna from its
+session. The invitation remains pending until either Board Officer signs in,
+enters a fresh authenticator code, and approves it with a reason. To test the
+other Officer, use a separate invitation for a different test address.
+
+Brionna's 24-hour setup link is delivered by Ethereal SMTP and can be read in
+the configured Ethereal account's Messages page. After her MFA enrollment and
+successful test sign-in, run the manual conversion and cleanup commands above
+at the appropriate stages. No Officer accounts or email messages are created
+until the database migrations are applied, private Ethereal SMTP credentials
+are set, and you run the interactive commands.
 
 ## Troubleshoot MySQL `ER_ACCESS_DENIED_ERROR`
 
-Check whether the MySQL account exists, including its host:
+In MySQL Workbench, check whether the configured application login exists:
 
 ```sql
 SELECT user, host FROM mysql.user WHERE user = 'eNMRIS';
 ```
 
-If this returns no rows, MySQL has no `eNMRIS` account, which explains the
-backend's access-denied error. MySQL accounts are host-specific: a backend
-connecting to `127.0.0.1` may need an account for that host, distinct from
-`localhost`. For local development, create accounts for both hosts in MySQL
-Workbench if necessary. Replace the password placeholder below with a strong,
-unique password; do not reuse or commit it:
+If this query returns **0 rows**, the `eNMRIS` MySQL login does not exist; that
+explains `ER_ACCESS_DENIED_ERROR`. Create the host-specific accounts, replacing
+the password placeholder with the same strong, unique password for both hosts
+and in `backend/.env`:
 
 ```sql
-CREATE USER IF NOT EXISTS 'eNMRIS'@'localhost'
+CREATE USER 'eNMRIS'@'localhost'
   IDENTIFIED BY 'REPLACE_WITH_A_STRONG_UNIQUE_PASSWORD';
-CREATE USER IF NOT EXISTS 'eNMRIS'@'127.0.0.1'
+CREATE USER 'eNMRIS'@'127.0.0.1'
   IDENTIFIED BY 'REPLACE_WITH_A_STRONG_UNIQUE_PASSWORD';
 
 GRANT SELECT, INSERT ON enmris.app_users
+  TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
+GRANT UPDATE (totp_last_used_step, active) ON enmris.app_users
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE ON enmris.app_sessions
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT, INSERT, UPDATE ON enmris.auth_login_attempts
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE ON enmris.admin_invitations
+  TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT ON enmris.app_user_permissions
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
 GRANT SELECT, INSERT ON enmris.audit_log
   TO 'eNMRIS'@'localhost', 'eNMRIS'@'127.0.0.1';
+FLUSH PRIVILEGES;
 ```
 
-Run the full script in Workbench, then repeat the `SELECT` to confirm the
-accounts exist (two rows when both host-specific accounts were created). If an
-account already exists but its password differs, use `ALTER USER` for that
-specific host and update `DB_PASSWORD` in the local `backend/.env` to match.
-Then restart the backend and check `/health`. The application account
-deliberately has no `UPDATE` or `DELETE` permission on `audit_log`. Rotate any
-database password that has been shared or exposed.
+Run the whole script in Workbench with the execute-script (lightning-bolt)
+button and confirm each statement reports success in the Output panel. Then
+rerun the `SELECT`; it should return two rows, one for each host.
+Restart the backend with `npm start`. The database readiness check should pass;
+verify with `Invoke-RestMethod http://localhost:3000/health`. Before production,
+rotate any temporary or shared database password and update both the MySQL
+accounts and `backend/.env`.

@@ -58,9 +58,9 @@ function decryptTotpSecret(encryptedValue, encodedKey) {
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
 }
 
-function verifyTotpCode(secret, token) {
+function getTotpStep(secret, token, window = 1) {
   if (!/^\d{6}$/.test(String(token))) {
-    return false;
+    return null;
   }
 
   const totp = new OTPAuth.TOTP({
@@ -71,7 +71,12 @@ function verifyTotpCode(secret, token) {
     period: 30,
     secret: OTPAuth.Secret.fromBase32(secret),
   });
-  return totp.validate({ token: String(token), window: 1 }) !== null;
+  const delta = totp.validate({ token: String(token), window });
+  return delta === null ? null : Math.floor(Date.now() / 30_000) + delta;
+}
+
+function verifyTotpCode(secret, token) {
+  return getTotpStep(secret, token) !== null;
 }
 
 function hashSessionToken(token) {
@@ -90,6 +95,7 @@ module.exports = {
   decodeKey,
   decryptTotpSecret,
   encryptTotpSecret,
+  getTotpStep,
   hashPassword,
   hashSessionToken,
   verifyPassword,

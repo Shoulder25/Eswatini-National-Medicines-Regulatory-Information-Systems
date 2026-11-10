@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
 
 function Brand({ inverse = false }) {
@@ -19,6 +19,7 @@ function Brand({ inverse = false }) {
 }
 
 export default function LoginPage() {
+  const navigate = useNavigate();
   const { phase, user, error: sessionError, signIn, retry } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -33,9 +34,10 @@ export default function LoginPage() {
     setFormError(null);
     setSubmitting(true);
     try {
-      await signIn({ email: email.trim(), password, totpCode: totpCode.trim() });
+      const result = await signIn({ email: email.trim(), password, totpCode: totpCode.trim() });
       setPassword('');
       setTotpCode('');
+      if (result?.mfaEnrollmentRequired) navigate('/enroll-officer-mfa', { replace: true });
     } catch (error) {
       setFormError(error);
     } finally {
@@ -132,7 +134,7 @@ export default function LoginPage() {
               <div>
                 <div className="flex items-end justify-between gap-3">
                   <label className="field-label mb-0" htmlFor="totpCode">Authenticator code</label>
-                  <span className="text-xs font-medium text-slate-500">6 digits</span>
+                  <span className="text-xs font-medium text-slate-500">6 digits, if enrolled</span>
                 </div>
                 <input
                   autoComplete="one-time-code"
@@ -142,14 +144,12 @@ export default function LoginPage() {
                   maxLength={6}
                   name="totpCode"
                   onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                  pattern="[0-9]{6}"
                   placeholder="••••••"
-                  required
                   type="text"
                   value={totpCode}
                 />
                 <p className="mt-2 text-xs leading-5 text-slate-500">
-                  Enter the current time-based one-time password (TOTP) from your authenticator app.
+                  Enter your current authenticator code. Board Officers can leave this blank on their first sign-in to enroll.
                 </p>
               </div>
 

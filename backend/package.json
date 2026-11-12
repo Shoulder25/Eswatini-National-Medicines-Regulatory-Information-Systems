@@ -1,0 +1,27 @@
+{
+  "name": "enmris-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "eNMRIS Express API",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "admin:create": "node src/scripts/create-admin.js",
+    "officer:bootstrap": "node src/scripts/bootstrap-officer.js",
+    "staff:bootstrap": "node src/scripts/bootstrap-officer.js",
+    "admin-tester:convert": "node src/scripts/convert-admin-tester.js",
+    "admin-tester:deactivate": "node src/scripts/deactivate-admin-tester.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mysql2": "^3.14.1",
+    "nodemailer": "^10.4.0",
+    "otpauth": "^9.6.0"
+  }
+}

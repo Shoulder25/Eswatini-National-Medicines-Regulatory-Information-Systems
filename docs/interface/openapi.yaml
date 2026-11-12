@@ -1,0 +1,2042 @@
+openapi: 3.1.0
+info:
+  title: eNMRIS API
+  version: 1.0.0
+  description: >
+    Draft application and read-only FHIR R4 contract for the eNMRIS prototype.
+    Registration status changes and recall issuance/closure are approval-gated.
+servers:
+  - url: /
+    description: Current deployment origin
+tags:
+  - name: Authentication
+    description: Staff login and external client token issuance
+  - name: Admin replacement
+    description: Private invitation, Board Officer approval, and replacement Admin enrollment
+  - name: Officer replacement
+    description: Head-of-IT requests, continuing-Officer approval, and position handover
+  - name: Products
+    description: Staff product search, maintenance, and CMS workbook exchange
+  - name: Registrations
+    description: Registration records, organisations, and status history
+  - name: Batches
+    description: Product batch records
+  - name: Recalls
+    description: Recall issue and closure requests
+  - name: Approvals
+    description: Independent review and decision of regulatory change requests
+  - name: Public verification
+    description: Limited read-only medicine and active-recall search
+  - name: FHIR R4
+    description: Authenticated read-only FHIR interface
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Authenticate an MRA staff user
+      description: Requires email and password. Enrolled users also provide a TOTP code; an unenrolled Board Officer or Head of IT receives a short-lived first-sign-in enrollment challenge instead of a session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful; an unenrolled Board Officer or Head of IT instead receives an enrollment challenge
+          headers:
+            Cache-Control:
+              description: Prevents caching of authentication and authenticator enrollment secrets.
+              schema:
+                type: string
+            Set-Cookie:
+              description: Opaque session cookie; 20-minute idle timeout. Absent when first-sign-in enrollment is required.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SessionResponse'
+                  - $ref: '#/components/schemas/OfficerMfaEnrollmentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /api/v1/auth/mfa/enrollment/complete:
+    post:
+      tags: [Authentication]
+      operationId: completeOfficerMfaEnrollment
+      summary: Complete first-sign-in Board Officer authenticator enrollment
+      description: Consumes a short-lived, single-use enrollment challenge returned after password verification. The pending secret is encrypted at rest; the client submits only the current code.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficerMfaEnrollmentRequest'
+      responses:
+        '200':
+          description: Authenticator enrolled and staff session created
+          headers:
+            Set-Cookie:
+              description: Opaque session cookie; 20-minute idle timeout.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /api/v1/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Revoke the current staff session
+      security:
+        - staffSession: []
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/auth/me:
+    get:
+      tags: [Authentication]
+      operationId: getCurrentUser
+      summary: Get the current user and effective permissions
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/admin-invitations:
+    get:
+      tags: [Admin replacement]
+      operationId: listAdminInvitations
+      summary: List Admin replacement requests
+      description: Access is controlled by invite_admin and approve_admin_replacement permissions; Board-position checks remain enforced for decisions. Position display labels are returned separately from stable codes. Setup tokens are never returned.
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: Invitation records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminInvitation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Admin replacement]
+      operationId: createAdminInvitation
+      summary: Request an Admin replacement
+      description: Admin or ADMIN_TESTER. Testers may invite but cannot approve. Exact email-domain allowlisting is enforced. Creates a pending invitation, not an account.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminInvitationCreateRequest'
+      responses:
+        '201':
+          description: Invitation submitted for independent Board Officer review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/admin-invitations/{invitationId}/decision:
+    post:
+      tags: [Admin replacement]
+      operationId: decideAdminInvitation
+      summary: Approve or reject a replacement Admin
+      description: Board Chair or Vice Chair only. Requires a decision reason and fresh authenticator code. Either Officer can decide independently; self-approval is blocked.
+      security:
+        - staffSession: []
+      parameters:
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficerReplacementDecisionRequest'
+      responses:
+        '200':
+          description: Decision recorded; approval email delivery is reported without exposing the setup token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationDecisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/admin-invitations/{invitationId}/reissue:
+    post:
+      tags: [Admin replacement]
+      operationId: reissueAdminSetupLink
+      summary: Reissue a failed or expired setup link
+      description: Only the approving Board Officer may reissue the link. A fresh authenticator code and reason are required; prior tokens are invalidated.
+      security:
+        - staffSession: []
+      parameters:
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSetupReissueRequest'
+      responses:
+        '200':
+          description: New setup email delivery result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationDecisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/admin-invitations/setup/inspect:
+    post:
+      tags: [Admin replacement]
+      operationId: inspectAdminSetupToken
+      summary: Validate a replacement Admin setup token
+      description: Public single-use-token check. Token is accepted only in the request body and is never echoed in the response.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{43}$'
+      responses:
+        '200':
+          description: Invitation recipient and expiry plus the pending authenticator key and URI; never cache this response
+          headers:
+            Cache-Control:
+              description: No-store response containing the pending authenticator secret.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSetupInspectionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/v1/admin-invitations/setup/complete:
+    post:
+      tags: [Admin replacement]
+      operationId: completeAdminSetup
+      summary: Enroll the invited replacement Admin
+      description: Public, single-use enrollment with a 24-hour setup token, password, and current TOTP code. The backend validates the code against its encrypted pending authenticator secret. Does not deactivate the previous Admin.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSetupCompleteRequest'
+      responses:
+        '201':
+          description: Account enrolled; successful first sign-in is still required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSetupCompleteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements:
+    get:
+      tags: [Officer replacement]
+      operationId: listOfficerReplacements
+      summary: List Officer replacement requests
+      description: Users with start_replacement see their own requests; users with approve_replacement see the review queue. Board-position display labels are returned separately from stable codes.
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: Replacement requests; tokens and authenticator secrets are never returned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [requests, boardPositions]
+                    properties:
+                      requests:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OfficerReplacement'
+                      boardPositions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/BoardPosition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Officer replacement]
+      operationId: createOfficerReplacement
+      summary: Request replacement of one Board Officer
+      description: Active Head of IT only. Both current Officers are notified; only the continuing non-outgoing Officer may decide.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficerReplacementCreateRequest'
+      responses:
+        '201':
+          description: Request pending approval; notice delivery is reported per Officer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficerReplacementCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements/{requestId}/decision:
+    post:
+      tags: [Officer replacement]
+      operationId: decideOfficerReplacement
+      summary: Approve or reject an Officer replacement
+      description: Only the saved continuing Officer may decide, using a fresh authenticator code and written reason.
+      security:
+        - staffSession: []
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminInvitationDecisionRequest'
+      responses:
+        '200':
+          description: Decision recorded; approval reports setup email delivery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInvitationDecisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements/{requestId}/reissue:
+    post:
+      tags: [Officer replacement]
+      operationId: reissueOfficerSetupLink
+      summary: Reissue a failed or expired Officer setup link
+      description: Only the saved continuing Officer may reissue, with a reason and fresh authenticator code.
+      security:
+        - staffSession: []
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSetupReissueRequest'
+      responses:
+        '200':
+          description: New setup email delivery result
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/officer-replacements/setup/inspect:
+    post:
+      tags: [Officer replacement]
+      operationId: inspectOfficerSetupToken
+      summary: Validate a replacement Officer setup token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupTokenRequest'
+      responses:
+        '200':
+          description: Incoming Officer details, token expiry, and pending authenticator key and URI; never cache this response
+          headers:
+            Cache-Control:
+              description: No-store response containing the pending authenticator secret.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfficerSetupInspectionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/v1/officer-replacements/setup/complete:
+    post:
+      tags: [Officer replacement]
+      operationId: completeOfficerReplacementSetup
+      summary: Create incoming Officer account and enroll MFA
+      description: Public single-use enrollment using the pending encrypted authenticator secret and its current code. The outgoing Officer remains active until the incoming Officer completes a successful sign-in.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfficerSetupCompleteRequest'
+      responses:
+        '201':
+          description: Officer account created; test sign-in is still required
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/oauth/token:
+    post:
+      tags: [Authentication]
+      operationId: issueClientToken
+      summary: Issue a short-lived FHIR access token
+      description: Uses a registered client ID and secret. Client scopes are assigned administratively; only read-only FHIR scope is supported.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id, client_secret]
+              properties:
+                grant_type:
+                  type: string
+                  const: client_credentials
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+      responses:
+        '200':
+          description: Access token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /api/v1/products:
+    get:
+      tags: [Products]
+      operationId: listProducts
+      summary: Search the staff medicines register
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Product page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Products]
+      operationId: createProduct
+      summary: Create a product record
+      description: Admin or Officer. Product codes must remain strings.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductInput'
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseProduct'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/products/{productId}:
+    get:
+      tags: [Products]
+      operationId: getProduct
+      summary: Get a product and its programme mappings
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: Product
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseProduct'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/organisations:
+    get:
+      tags: [Registrations]
+      operationId: listOrganisations
+      summary: Search medicine holders and manufacturers
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Organisation page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganisationPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Registrations]
+      operationId: createOrganisation
+      summary: Create a medicine holder or manufacturer
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganisationInput'
+      responses:
+        '201':
+          description: Organisation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseOrganisation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/products/import:
+    post:
+      tags: [Products]
+      operationId: importProducts
+      summary: Import the CMS workbook layout
+      description: Validates the complete workbook before writing; does not import explanatory legend rows as programme mappings.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Workbook exceeds the configured upload limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/products/export:
+    get:
+      tags: [Products]
+      operationId: exportProducts
+      summary: Export products in the CMS workbook layout
+      security:
+        - staffSession: []
+      responses:
+        '200':
+          description: CMS-compatible workbook
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/registrations:
+    post:
+      tags: [Registrations]
+      operationId: createRegistration
+      summary: Create a Pending registration
+      description: Initial creation is audited. Any later status transition requires a separately approved request.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationInput'
+      responses:
+        '201':
+          description: Registration created as Pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseRegistration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/registrations/{registrationId}:
+    get:
+      tags: [Registrations]
+      operationId: getRegistration
+      summary: Get a registration
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      responses:
+        '200':
+          description: Registration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseRegistration'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/registrations/{registrationId}/status-history:
+    get:
+      tags: [Registrations]
+      operationId: getRegistrationStatusHistory
+      summary: Get registration status history
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      responses:
+        '200':
+          description: Status history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/registrations/{registrationId}/status-change-requests:
+    post:
+      tags: [Registrations]
+      operationId: requestRegistrationStatusChange
+      summary: Request a registration status change
+      description: Creates a pending request; it does not change the registration until a different authorized user approves it.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RegistrationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationStatusChangeInput'
+      responses:
+        '202':
+          description: Approval request queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/batches:
+    post:
+      tags: [Batches]
+      operationId: createBatch
+      summary: Add a product batch
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchInput'
+      responses:
+        '201':
+          description: Batch created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseBatch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/batches/{batchId}:
+    get:
+      tags: [Batches]
+      operationId: getBatch
+      summary: Get a batch and its recalls
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/BatchId'
+      responses:
+        '200':
+          description: Batch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataResponseBatch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/recall-change-requests:
+    post:
+      tags: [Recalls]
+      operationId: requestRecallIssue
+      summary: Request a recall covering one or more batches
+      description: The recall becomes Active only after a different authorized user approves the request.
+      security:
+        - staffSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecallIssueInput'
+      responses:
+        '202':
+          description: Recall issue request queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/recalls/{recallId}/closure-requests:
+    post:
+      tags: [Recalls]
+      operationId: requestRecallClosure
+      summary: Request closure of an active recall
+      description: A different authorized user must approve the request before the recall becomes Closed.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RecallId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecallClosureInput'
+      responses:
+        '202':
+          description: Recall closure request queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/approvals:
+    get:
+      tags: [Approvals]
+      operationId: listPendingApprovals
+      summary: List requests the caller may approve
+      security:
+        - staffSession: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, decided]
+            default: pending
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Approval requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/approvals/{requestType}/{requestId}/approve:
+    post:
+      tags: [Approvals]
+      operationId: approveRequest
+      summary: Approve a pending request
+      description: Caller must have Admin or designated Officer approval permission and must not be the requester.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RequestType'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionInput'
+      responses:
+        '200':
+          description: Request approved and change applied atomically
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/approvals/{requestType}/{requestId}/reject:
+    post:
+      tags: [Approvals]
+      operationId: rejectRequest
+      summary: Reject a pending request
+      description: Caller must have Admin or designated Officer approval permission and must not be the requester.
+      security:
+        - staffSession: []
+      parameters:
+        - $ref: '#/components/parameters/RequestType'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionInput'
+      responses:
+        '200':
+          description: Request rejected; regulatory record remains unchanged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRequestResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/public/search:
+    get:
+      tags: [Public verification]
+      operationId: publicMedicineSearch
+      summary: Search approved medicines and active recalls
+      description: Returns limited public fields only; no holder details, internal history, staff data, or audit records.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+      responses:
+        '200':
+          description: Limited public search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /fhir/metadata:
+    get:
+      tags: [FHIR R4]
+      operationId: fhirCapabilityStatement
+      summary: Get the FHIR R4 capability statement
+      security:
+        - fhirOAuth:
+            - fhir.read
+      responses:
+        '200':
+          description: FHIR R4 CapabilityStatement
+          content:
+            application/fhir+json:
+              schema:
+                $ref: '#/components/schemas/FhirResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /fhir/Medication:
+    get:
+      tags: [FHIR R4]
+      operationId: searchFhirMedication
+      summary: Search medicines
+      description: Read-only search by CMS product code or medicine name; returns a FHIR R4 Bundle.
+      security:
+        - fhirOAuth:
+            - fhir.read
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: _count
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: FHIR R4 search Bundle
+          content:
+            application/fhir+json:
+              schema:
+                $ref: '#/components/schemas/FhirResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /fhir/Medication/{medicationId}:
+    get:
+      tags: [FHIR R4]
+      operationId: readFhirMedication
+      summary: Read a medicine
+      security:
+        - fhirOAuth:
+            - fhir.read
+      parameters:
+        - name: medicationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: FHIR R4 Medication
+          content:
+            application/fhir+json:
+              schema:
+                $ref: '#/components/schemas/FhirResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    staffSession:
+      type: apiKey
+      in: cookie
+      name: enmris_session
+      description: Opaque, revocable staff session cookie; CSRF protection is required for mutations.
+    fhirOAuth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: /api/v1/oauth/token
+          scopes:
+            fhir.read: Read-only FHIR R4 access
+  parameters:
+    SearchQuery:
+      name: q
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RegistrationId:
+      name: registrationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    BatchId:
+      name: batchId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RecallId:
+      name: recallId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RequestType:
+      name: requestType
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [registration-status, recall]
+  responses:
+    BadRequest:
+      description: Invalid request input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Authentication is required or credentials are invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Caller lacks the required role, permission, or scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Request conflicts with current state or a uniqueness constraint
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: Request rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error, requestId]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        requestId:
+          type: string
+          format: uuid
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Required for enrolled accounts; omitted for first-time Board Officer authenticator enrollment.
+    OfficerMfaEnrollmentRequest:
+      type: object
+      required: [enrollmentToken, totpCode]
+      properties:
+        enrollmentToken:
+          type: string
+          description: Single-use challenge received in the password-authenticated login response.
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Current code generated from the pending authenticator secret.
+    OfficerMfaEnrollmentResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [mfaEnrollmentRequired, enrollmentToken, enrollmentExpiresInMinutes, totpSecret, otpauthUri, user]
+          properties:
+            mfaEnrollmentRequired:
+              type: boolean
+              const: true
+            enrollmentToken:
+              type: string
+              description: Short-lived one-time challenge; never put in a URL or persistent browser storage.
+            enrollmentExpiresInMinutes:
+              type: integer
+              const: 10
+            totpSecret:
+              type: string
+              pattern: '^[A-Z2-7]{32}$'
+              description: Manual fallback key; returned only with Cache-Control no-store.
+            otpauthUri:
+              type: string
+              format: uri
+              description: Standard URI using the eNMRIS issuer and account holder's full name, not email; returned only with Cache-Control no-store.
+            user:
+              type: object
+              required: [id, name, email, role, officerPosition]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                role:
+                  type: string
+                roleCode:
+                  type: string
+                officerPosition:
+                  type: [string, 'null']
+                roleLabel:
+                  type: string
+                officerPositionLabel:
+                  type: [string, 'null']
+    UserSummary:
+      type: object
+      required: [id, name, email, role, roleCode, roleLabel, permissions]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+        roleCode:
+          type: string
+          description: Stable role identifier; authorization never depends on display labels.
+        roleLabel:
+          type: string
+          description: Editable display label for roleCode at response time.
+        officerPosition:
+          type: [string, 'null']
+        officerPositionLabel:
+          type: [string, 'null']
+          description: Editable display label for officerPosition at response time.
+        permissions:
+          type: array
+          items:
+            type: string
+    AdminInvitationCreateRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        email:
+          type: string
+          format: email
+          maxLength: 254
+    AdminInvitationDecisionRequest:
+      type: object
+      required: [decision, reason, totpCode]
+      properties:
+        decision:
+          type: string
+          enum: [APPROVE, REJECT]
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    AdminSetupReissueRequest:
+      type: object
+      required: [reason, totpCode]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    SetupTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+    OfficerReplacementCreateRequest:
+      type: object
+      required: [outgoingPosition, incomingName, incomingEmail]
+      properties:
+        outgoingPosition:
+          type: string
+          enum: [BOARD_CHAIR, BOARD_VICE_CHAIR]
+        incomingName:
+          type: string
+          minLength: 1
+          maxLength: 160
+        incomingEmail:
+          type: string
+          format: email
+          maxLength: 254
+    OfficerReplacementDecisionRequest:
+      type: object
+      required: [decision, reason, totpCode]
+      properties:
+        decision:
+          type: string
+          enum: [APPROVE, REJECT]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    OfficerSetupCompleteRequest:
+      type: object
+      required: [token, password, totpCode]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 1024
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    BoardPosition:
+      type: object
+      required: [code, label]
+      properties:
+        code:
+          type: string
+          description: Stable role code used for workflow decisions.
+        label:
+          type: string
+          description: Editable display label.
+    OfficerReplacement:
+      type: object
+      required: [id, request_type, outgoing_position, incoming_name, incoming_email, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        request_type:
+          type: string
+          enum: [HEAD_OF_IT, EMERGENCY_BOOTSTRAP]
+        requested_by:
+          type: [string, 'null']
+          format: uuid
+        outgoing_position:
+          type: string
+        outgoing_position_label:
+          type: string
+        continuing_officer_user_id:
+          type: [string, 'null']
+          format: uuid
+        incoming_name:
+          type: string
+        incoming_email:
+          type: string
+          format: email
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, REJECTED, SETUP_COMPLETE, EMERGENCY_SETUP, COMPLETED, EXPIRED]
+        approval_expires_at:
+          type: [string, 'null']
+          format: date-time
+        decided_at:
+          type: [string, 'null']
+          format: date-time
+        decision_officer_position:
+          type: [string, 'null']
+        decision_officer_position_label:
+          type: [string, 'null']
+        decision_reason:
+          type: [string, 'null']
+        delivery_status:
+          type: string
+          enum: [NOT_SENT, SENT, FAILED]
+        email_sent_at:
+          type: [string, 'null']
+          format: date-time
+        setup_token_expires_at:
+          type: [string, 'null']
+          format: date-time
+        setup_completed_at:
+          type: [string, 'null']
+          format: date-time
+        test_sign_in_at:
+          type: [string, 'null']
+          format: date-time
+        outgoing_deactivated_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    OfficerReplacementCreateResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, status, approvalExpiresInDays, noticeDelivery]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              const: PENDING_APPROVAL
+            approvalExpiresInDays:
+              type: integer
+              const: 7
+            noticeDelivery:
+              type: array
+              items:
+                type: object
+                required: [position, status]
+                properties:
+                  position:
+                    type: string
+                  positionLabel:
+                    type: string
+                  status:
+                    type: string
+                    enum: [SENT, FAILED]
+    OfficerSetupInspectionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [requestId, name, email, expiresAt, totpSecret, otpauthUri]
+          properties:
+            requestId:
+              type: string
+              format: uuid
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            expiresAt:
+              type: string
+              format: date-time
+            totpSecret:
+              type: string
+              pattern: '^[A-Z2-7]{32}$'
+            otpauthUri:
+              type: string
+              format: uri
+              description: Uses the eNMRIS issuer and incoming Officer's full name, not email.
+    AdminInvitation:
+      type: object
+      required: [id, invitee_name, invitee_email, status, approval_expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        invitee_name:
+          type: string
+        invitee_email:
+          type: string
+          format: email
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, REJECTED, SETUP_COMPLETE, COMPLETED, EXPIRED]
+        approval_expires_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: [string, 'null']
+          format: date-time
+        decision_officer_position:
+          type: [string, 'null']
+        decision_officer_position_label:
+          type: [string, 'null']
+        decision_reason:
+          type: [string, 'null']
+        delivery_status:
+          type: string
+          enum: [NOT_SENT, SENT, FAILED]
+        setup_token_expires_at:
+          type: [string, 'null']
+          format: date-time
+        setup_completed_at:
+          type: [string, 'null']
+          format: date-time
+        test_sign_in_at:
+          type: [string, 'null']
+          format: date-time
+        replaced_admin_deactivated_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    AdminInvitationCreateResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, status, approvalExpiresInDays]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              const: PENDING_APPROVAL
+            approvalExpiresInDays:
+              type: integer
+              const: 7
+    AdminInvitationDecisionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, status]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [APPROVED, REJECTED]
+            deliveryStatus:
+              type: [string, 'null']
+              enum: [SENT, FAILED, null]
+            message:
+              type: string
+    AdminSetupInspectionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [invitationId, name, email, expiresAt, totpSecret, otpauthUri]
+          properties:
+            invitationId:
+              type: string
+              format: uuid
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+            expiresAt:
+              type: string
+              format: date-time
+            totpSecret:
+              type: string
+              pattern: '^[A-Z2-7]{32}$'
+            otpauthUri:
+              type: string
+              format: uri
+              description: Uses the eNMRIS issuer and invitee's full name, not email.
+    AdminSetupCompleteRequest:
+      type: object
+      required: [token, password, totpCode]
+      properties:
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 1024
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+    AdminSetupCompleteResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [status, message]
+          properties:
+            status:
+              type: string
+              const: SETUP_COMPLETE
+            message:
+              type: string
+    SessionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [user, idleTimeoutMinutes]
+          properties:
+            user:
+              $ref: '#/components/schemas/UserSummary'
+            idleTimeoutMinutes:
+              type: integer
+              const: 20
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          minimum: 1
+        scope:
+          type: string
+          const: fhir.read
+    ProductInput:
+      type: object
+      required: [productCode, dispensable, name, description, packSize, packRoundingThreshold, roundToZero]
+      properties:
+        productCode:
+          type: string
+          maxLength: 64
+        dispensable:
+          type: string
+          maxLength: 120
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        packSize:
+          type: number
+          minimum: 0
+        packRoundingThreshold:
+          type: number
+          minimum: 0
+        roundToZero:
+          type: boolean
+    Product:
+      allOf:
+        - $ref: '#/components/schemas/ProductInput'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+    ProductPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    DataResponseProduct:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Product'
+    PageMeta:
+      type: object
+      required: [page, pageSize, total]
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+    OrganisationInput:
+      type: object
+      required: [name, orgType, countryCode]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        orgType:
+          type: string
+          enum: [HOLDER, MANUFACTURER, BOTH]
+        countryCode:
+          type: string
+          pattern: '^[A-Z]{3}$'
+    Organisation:
+      allOf:
+        - $ref: '#/components/schemas/OrganisationInput'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+    OrganisationPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Organisation'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    DataResponseOrganisation:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Organisation'
+    ImportResult:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [productsImported, programmeLinksImported]
+          properties:
+            productsImported:
+              type: integer
+            programmeLinksImported:
+              type: integer
+            warnings:
+              type: array
+              items:
+                type: string
+    RegistrationInput:
+      type: object
+      required: [productId, holderId, registrationNumber]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        holderId:
+          type: string
+          format: uuid
+        registrationNumber:
+          type: string
+          maxLength: 100
+        approvalDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+        statusReason:
+          type: string
+    Registration:
+      allOf:
+        - $ref: '#/components/schemas/RegistrationInput'
+        - type: object
+          required: [id, status]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [PENDING, REGISTERED, SUSPENDED, REVOKED, EXPIRED]
+    DataResponseRegistration:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Registration'
+    RegistrationStatusChangeInput:
+      type: object
+      required: [targetStatus, reason]
+      properties:
+        targetStatus:
+          type: string
+          enum: [REGISTERED, SUSPENDED, REVOKED]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+    ApprovalRequest:
+      type: object
+      required: [id, requestType, decision, requestedBy, requestedAt, reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+        requestType:
+          type: string
+          enum: [REGISTRATION_STATUS, RECALL_ISSUE, RECALL_CLOSE]
+        decision:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+        requestedBy:
+          type: string
+          format: uuid
+        requestedAt:
+          type: string
+          format: date-time
+        decidedBy:
+          type: string
+          format: uuid
+        decidedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+        targetStatus:
+          type: string
+          enum: [REGISTERED, SUSPENDED, REVOKED, ACTIVE, CLOSED]
+        recallClass:
+          type: string
+          enum: [I, II, III]
+        batchIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+    ApprovalRequestResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ApprovalRequest'
+    ApprovalPage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalRequest'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    DecisionInput:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+    HistoryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    BatchInput:
+      type: object
+      required: [productId, batchCode, expiryDate]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        batchCode:
+          type: string
+          maxLength: 100
+        manufactureDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+    Batch:
+      allOf:
+        - $ref: '#/components/schemas/BatchInput'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+    DataResponseBatch:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Batch'
+    RecallIssueInput:
+      type: object
+      required: [recallClass, reason, batchIds]
+      properties:
+        recallClass:
+          type: string
+          enum: [I, II, III]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        batchIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    RecallClosureInput:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 4000
+    PublicSearchResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [productCode, name, registrationStatus, activeRecalls]
+            properties:
+              productCode:
+                type: string
+              name:
+                type: string
+              registrationStatus:
+                type: string
+                const: REGISTERED
+              activeRecalls:
+                type: array
+                items:
+                  type: object
+                  required: [recallClass, reason, batchCodes]
+                  properties:
+                    recallClass:
+                      type: string
+                      enum: [I, II, III]
+                    reason:
+                      type: string
+                    batchCodes:
+                      type: array
+                      items:
+                        type: string
+    FhirResource:
+      type: object
+      required: [resourceType]
+      properties:
+        resourceType:
+          type: string
+        id:
+          type: string
+        meta:
+          type: object
+        entry:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true

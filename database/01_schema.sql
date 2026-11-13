@@ -1,4 +1,5 @@
 \-- eNMRIS schema baseline for MySQL 8.0.16 or later (enforced CHECK constraints).
+-- Table creation is safe to rerun; use numbered migrations for upgrades.
 -- Run against a fresh database. Configure the application DB account separately;
 -- it must not have UPDATE or DELETE privileges on audit_log.
 CREATE DATABASE IF NOT EXISTS enmris
@@ -8,7 +9,7 @@ CREATE DATABASE IF NOT EXISTS enmris
 USE enmris;
 SET time_zone = '+00:00';
 
-CREATE TABLE roles (
+CREATE TABLE IF NOT EXISTS roles (
   role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   display_label VARCHAR(120) NOT NULL,
   is_position BOOLEAN NOT NULL DEFAULT FALSE,
@@ -27,9 +28,16 @@ INSERT IGNORE INTO roles (role_code, display_label, is_position) VALUES
   ('BOARD_CHAIR', 'Board Chair', TRUE),
   ('BOARD_VICE_CHAIR', 'Board Vice Chair', TRUE),
   ('SYSTEM', 'System', FALSE),
-  ('CLIENT', 'Client', FALSE);
+  ('CLIENT', 'Client', FALSE),
+  ('SENIOR_REGISTRAR', 'Senior Registrar', TRUE),
+  ('PRODUCT_REGISTRATION', 'Senior Product Registration & Evaluation Officer', TRUE),
+  ('ESTABLISHMENT_LICENSING', 'Establishment Licensing & Inspection Officer', TRUE),
+  ('IMPORT_EXPORT_CONTROLLED', 'Import/Export & Controlled Substances Officer', TRUE),
+  ('PHARMACOVIGILANCE', 'Pharmacovigilance & Post-Market Surveillance Officer', TRUE),
+  ('CLINICAL_COMPLIANCE', 'Clinical Trials & Regulatory Compliance Officer', TRUE),
+  ('IT_ADMINISTRATOR', 'IT Administrator', TRUE);
 
-CREATE TABLE role_permissions (
+CREATE TABLE IF NOT EXISTS role_permissions (
   role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   permission_code VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   granted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -40,20 +48,40 @@ CREATE TABLE role_permissions (
 
 INSERT IGNORE INTO role_permissions (role_code, permission_code) VALUES
   ('ADMIN', 'invite_admin'),
+  ('ADMIN', 'start_replacement'),
   ('ADMIN_TESTER', 'invite_admin'),
   ('BOARD_CHAIR', 'approve_admin_replacement'),
   ('BOARD_VICE_CHAIR', 'approve_admin_replacement'),
   ('HEAD_OF_IT', 'start_replacement'),
   ('BOARD_CHAIR', 'approve_replacement'),
-  ('BOARD_VICE_CHAIR', 'approve_replacement');
+  ('BOARD_VICE_CHAIR', 'approve_replacement'),
+  ('SENIOR_REGISTRAR', 'approve_regulatory_decisions'),
+  ('SENIOR_REGISTRAR', 'manage_registration'),
+  ('SENIOR_REGISTRAR', 'manage_establishment_licensing'),
+  ('SENIOR_REGISTRAR', 'manage_import_export_permits'),
+  ('SENIOR_REGISTRAR', 'manage_recalls'),
+  ('SENIOR_REGISTRAR', 'manage_clinical_trials'),
+  ('SENIOR_REGISTRAR', 'manage_compliance_cases'),
+  ('PRODUCT_REGISTRATION', 'evaluate_registration'),
+  ('PRODUCT_REGISTRATION', 'manage_registration'),
+  ('ESTABLISHMENT_LICENSING', 'manage_establishment_licensing'),
+  ('ESTABLISHMENT_LICENSING', 'conduct_inspections'),
+  ('IMPORT_EXPORT_CONTROLLED', 'manage_import_export_permits'),
+  ('IMPORT_EXPORT_CONTROLLED', 'manage_controlled_substances'),
+  ('PHARMACOVIGILANCE', 'manage_pharmacovigilance'),
+  ('PHARMACOVIGILANCE', 'manage_recalls'),
+  ('CLINICAL_COMPLIANCE', 'manage_clinical_trials'),
+  ('CLINICAL_COMPLIANCE', 'manage_compliance_cases'),
+  ('IT_ADMINISTRATOR', 'manage_system');
 
-CREATE TABLE app_users (
+CREATE TABLE IF NOT EXISTS app_users (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   name VARCHAR(160) NOT NULL,
   email VARCHAR(254) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   officer_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  functional_role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   totp_secret_encrypted VARBINARY(512) NULL,
   totp_last_used_step BIGINT UNSIGNED NULL,
   mfa_enrollment_token_hash BINARY(32) NULL,
@@ -72,12 +100,28 @@ CREATE TABLE app_users (
       REFERENCES roles (role_code) ON DELETE RESTRICT,
     CONSTRAINT fk_app_users_officer_position FOREIGN KEY (officer_position)
       REFERENCES roles (role_code) ON DELETE RESTRICT,
+    CONSTRAINT fk_app_users_functional_role FOREIGN KEY (functional_role_code)
+      REFERENCES roles (role_code) ON DELETE RESTRICT,
     CONSTRAINT chk_app_users_officer_position CHECK (
       role_code = 'OFFICER' OR officer_position IS NULL
     )
 ) ENGINE=InnoDB;
 
-CREATE TABLE admin_invitations (
+CREATE TABLE IF NOT EXISTS admin_bootstrap_challenges (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  name VARCHAR(160) NOT NULL,
+  email VARCHAR(254) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  token_hash BINARY(32) NOT NULL,
+  totp_secret_encrypted VARBINARY(512) NOT NULL,
+  expires_at DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_admin_bootstrap_token_hash (token_hash),
+  KEY ix_admin_bootstrap_expiry (expires_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS admin_invitations (
     id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     invited_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     replaces_admin_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -134,7 +178,7 @@ CREATE TABLE admin_invitations (
     CONSTRAINT chk_admin_invitations_expiry CHECK (approval_expires_at > created_at)
 ) ENGINE=InnoDB;
 
-CREATE TABLE officer_replacement_requests (
+CREATE TABLE IF NOT EXISTS officer_replacement_requests (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   request_type ENUM('HEAD_OF_IT', 'EMERGENCY_BOOTSTRAP') NOT NULL,
   requested_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -209,7 +253,7 @@ CREATE TABLE officer_replacement_requests (
   )
 ) ENGINE=InnoDB;
 
-CREATE TABLE app_user_permissions (
+CREATE TABLE IF NOT EXISTS app_user_permissions (
   user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   permission_code VARCHAR(80) NOT NULL,
   granted_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -224,7 +268,7 @@ CREATE TABLE app_user_permissions (
     CHECK (user_id <> granted_by)
 ) ENGINE=InnoDB;
 
-CREATE TABLE app_sessions (
+CREATE TABLE IF NOT EXISTS app_sessions (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   session_token_hash BINARY(32) NOT NULL,
@@ -240,7 +284,51 @@ CREATE TABLE app_sessions (
   CONSTRAINT chk_app_sessions_expiry CHECK (expires_at > created_at)
 ) ENGINE=InnoDB;
 
-CREATE TABLE auth_login_attempts (
+CREATE TABLE IF NOT EXISTS user_recovery_codes (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  code_hash BINARY(32) NOT NULL,
+  used_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_user_recovery_code_hash (code_hash),
+  KEY ix_user_recovery_codes_user_active (user_id, used_at),
+  CONSTRAINT fk_user_recovery_codes_user FOREIGN KEY (user_id)
+    REFERENCES app_users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS account_recovery_requests (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  target_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  requested_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  status ENUM('PENDING_APPROVAL', 'APPROVED', 'COMPLETED', 'EXPIRED', 'REJECTED') NOT NULL DEFAULT 'PENDING_APPROVAL',
+  reason VARCHAR(1000) NOT NULL,
+  setup_token_hash BINARY(32) NULL,
+  setup_token_expires_at DATETIME(3) NULL,
+  setup_totp_secret_encrypted VARBINARY(512) NULL,
+  completed_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_account_recovery_setup_token (setup_token_hash),
+  KEY ix_account_recovery_status (status, created_at),
+  CONSTRAINT fk_account_recovery_target FOREIGN KEY (target_user_id)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_account_recovery_requester FOREIGN KEY (requested_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS account_recovery_approvals (
+  request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  approver_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  approved_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (request_id, approver_user_id),
+  CONSTRAINT fk_account_recovery_approval_request FOREIGN KEY (request_id)
+    REFERENCES account_recovery_requests (id) ON DELETE CASCADE,
+  CONSTRAINT fk_account_recovery_approval_user FOREIGN KEY (approver_user_id)
+    REFERENCES app_users (id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS auth_login_attempts (
   bucket_hash BINARY(32) NOT NULL,
   window_started_at DATETIME(3) NOT NULL,
   failure_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
@@ -249,7 +337,7 @@ CREATE TABLE auth_login_attempts (
   KEY ix_auth_login_attempts_lock (locked_until)
 ) ENGINE=InnoDB;
 
-CREATE TABLE api_clients (
+CREATE TABLE IF NOT EXISTS api_clients (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   client_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   display_name VARCHAR(160) NOT NULL,
@@ -264,7 +352,7 @@ CREATE TABLE api_clients (
   UNIQUE KEY uq_api_clients_client_id (client_id)
 ) ENGINE=InnoDB;
 
-CREATE TABLE api_client_scopes (
+CREATE TABLE IF NOT EXISTS api_client_scopes (
   client_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   scope VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   PRIMARY KEY (client_id, scope),
@@ -272,7 +360,7 @@ CREATE TABLE api_client_scopes (
     REFERENCES api_clients (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
-CREATE TABLE api_access_tokens (
+CREATE TABLE IF NOT EXISTS api_access_tokens (
   token_hash BINARY(32) NOT NULL,
   client_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   issued_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -285,7 +373,7 @@ CREATE TABLE api_access_tokens (
   CONSTRAINT chk_api_access_tokens_expiry CHECK (expires_at > issued_at)
 ) ENGINE=InnoDB;
 
-CREATE TABLE products (
+CREATE TABLE IF NOT EXISTS products (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   product_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   dispensable VARCHAR(120) NOT NULL,
@@ -311,7 +399,7 @@ CREATE TABLE products (
     CHECK (pack_rounding_threshold >= 0)
 ) ENGINE=InnoDB;
 
-CREATE TABLE product_programmes (
+CREATE TABLE IF NOT EXISTS product_programmes (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   product_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   program VARCHAR(80) NOT NULL,
@@ -339,7 +427,7 @@ CREATE TABLE product_programmes (
   CONSTRAINT chk_product_programmes_price CHECK (price_per_pack >= 0)
 ) ENGINE=InnoDB;
 
-CREATE TABLE organisations (
+CREATE TABLE IF NOT EXISTS organisations (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   name VARCHAR(200) NOT NULL,
   org_type ENUM('HOLDER', 'MANUFACTURER', 'BOTH') NOT NULL,
@@ -357,7 +445,7 @@ CREATE TABLE organisations (
     REFERENCES app_users (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
-CREATE TABLE registrations (
+CREATE TABLE IF NOT EXISTS registrations (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   product_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   holder_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -397,7 +485,7 @@ CREATE TABLE registrations (
     CHECK (expiry_date IS NULL OR approval_date IS NULL OR expiry_date >= approval_date)
 ) ENGINE=InnoDB;
 
-CREATE TABLE registration_status_change_requests (
+CREATE TABLE IF NOT EXISTS registration_status_change_requests (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   registration_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   requested_status ENUM('REGISTERED', 'SUSPENDED', 'REVOKED') NOT NULL,
@@ -429,7 +517,7 @@ CREATE TABLE registration_status_change_requests (
   )
 ) ENGINE=InnoDB;
 
-CREATE TABLE registration_status_history (
+CREATE TABLE IF NOT EXISTS registration_status_history (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   registration_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   change_request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -455,7 +543,7 @@ CREATE TABLE registration_status_history (
     CHECK (approved_by IS NULL OR changed_by IS NULL OR approved_by <> changed_by)
 ) ENGINE=InnoDB;
 
-CREATE TABLE batches (
+CREATE TABLE IF NOT EXISTS batches (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   product_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   batch_code VARCHAR(100) NOT NULL,
@@ -480,7 +568,7 @@ CREATE TABLE batches (
     CHECK (manufacture_date IS NULL OR expiry_date >= manufacture_date)
 ) ENGINE=InnoDB;
 
-CREATE TABLE recalls (
+CREATE TABLE IF NOT EXISTS recalls (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   recall_class ENUM('I', 'II', 'III') NOT NULL,
   reason TEXT NOT NULL,
@@ -512,7 +600,7 @@ CREATE TABLE recalls (
   )
 ) ENGINE=InnoDB;
 
-CREATE TABLE recall_batches (
+CREATE TABLE IF NOT EXISTS recall_batches (
   recall_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   batch_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -524,7 +612,7 @@ CREATE TABLE recall_batches (
     REFERENCES batches (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
-CREATE TABLE recall_change_requests (
+CREATE TABLE IF NOT EXISTS recall_change_requests (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   request_type ENUM('ISSUE', 'CLOSE') NOT NULL,
   recall_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -561,7 +649,7 @@ CREATE TABLE recall_change_requests (
   )
 ) ENGINE=InnoDB;
 
-CREATE TABLE recall_change_request_batches (
+CREATE TABLE IF NOT EXISTS recall_change_request_batches (
   request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   batch_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   PRIMARY KEY (request_id, batch_id),
@@ -571,7 +659,7 @@ CREATE TABLE recall_change_request_batches (
     REFERENCES batches (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
-CREATE TABLE recall_status_history (
+CREATE TABLE IF NOT EXISTS recall_status_history (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   recall_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   change_request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -596,7 +684,7 @@ CREATE TABLE recall_status_history (
     CHECK (approved_by IS NULL OR changed_by IS NULL OR approved_by <> changed_by)
 ) ENGINE=InnoDB;
 
-CREATE TABLE audit_log (
+CREATE TABLE IF NOT EXISTS audit_log (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   actor_type ENUM('USER', 'CLIENT', 'SYSTEM') NOT NULL,
   actor_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -616,4 +704,137 @@ CREATE TABLE audit_log (
   KEY ix_audit_log_entity_record (entity_name, record_id, created_at),
   KEY ix_audit_log_actor_time (actor_type, actor_id, created_at),
   KEY ix_audit_log_request (request_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS registration_applications (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  application_number VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  registration_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  application_type ENUM('NEW', 'RENEWAL', 'TRANSFER') NOT NULL DEFAULT 'NEW',
+  application_details JSON NULL,
+  status ENUM('SUBMITTED', 'UNDER_EVALUATION', 'EVALUATED', 'APPROVED', 'REJECTED', 'MORE_INFORMATION')
+    NOT NULL DEFAULT 'SUBMITTED',
+  submitted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  evaluated_at DATETIME(3) NULL,
+  decided_at DATETIME(3) NULL,
+  submitted_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  evaluated_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  decided_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_registration_applications_number (application_number),
+  UNIQUE KEY uq_registration_applications_registration (registration_id),
+  KEY ix_registration_applications_queue (status, submitted_at),
+  CONSTRAINT fk_registration_applications_registration FOREIGN KEY (registration_id)
+    REFERENCES registrations (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_registration_applications_submitted_by FOREIGN KEY (submitted_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_registration_applications_evaluated_by FOREIGN KEY (evaluated_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_registration_applications_decided_by FOREIGN KEY (decided_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS registration_evaluations (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  application_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  outcome ENUM('RECOMMEND_APPROVAL', 'RECOMMEND_REJECTION', 'REQUEST_INFORMATION') NOT NULL,
+  dossier_complete BOOLEAN NOT NULL,
+  findings TEXT NOT NULL,
+  conditions TEXT NULL,
+  evaluated_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  evaluated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_registration_evaluations_application (application_id),
+  CONSTRAINT fk_registration_evaluations_application FOREIGN KEY (application_id)
+    REFERENCES registration_applications (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_registration_evaluations_evaluator FOREIGN KEY (evaluated_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS establishment_applications (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  application_number VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  establishment_type ENUM('RETAIL_PHARMACY', 'WHOLESALER', 'MANUFACTURER', 'IMPORTER') NOT NULL,
+  details JSON NOT NULL,
+  status ENUM('SUBMITTED', 'UNDER_INSPECTION', 'INSPECTED', 'APPROVED', 'REJECTED', 'MORE_INFORMATION')
+    NOT NULL DEFAULT 'SUBMITTED',
+  submitted_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  inspected_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  decided_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  submitted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  inspected_at DATETIME(3) NULL,
+  decided_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_establishment_applications_number (application_number),
+  KEY ix_establishment_applications_queue (status, submitted_at),
+  CONSTRAINT fk_establishment_applications_submitted_by FOREIGN KEY (submitted_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_establishment_applications_inspected_by FOREIGN KEY (inspected_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_establishment_applications_decided_by FOREIGN KEY (decided_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS establishment_inspections (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  application_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  outcome ENUM('PASS', 'FAIL', 'MORE_INFORMATION') NOT NULL,
+  findings TEXT NOT NULL,
+  conditions TEXT NULL,
+  inspected_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  inspected_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_establishment_inspections_application (application_id),
+  CONSTRAINT fk_establishment_inspections_application FOREIGN KEY (application_id)
+    REFERENCES establishment_applications (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_establishment_inspections_inspector FOREIGN KEY (inspected_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS controlled_substance_permits (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  permit_number VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  permit_type ENUM('IMPORT', 'EXPORT') NOT NULL,
+  schedule_code ENUM('SCHEDULE_5', 'SCHEDULE_6', 'SCHEDULE_7', 'SCHEDULE_8') NOT NULL,
+  details JSON NOT NULL,
+  status ENUM('SUBMITTED', 'CUSTOMS_REVIEW', 'VERIFIED', 'APPROVED', 'REJECTED', 'MORE_INFORMATION')
+    NOT NULL DEFAULT 'SUBMITTED',
+  submitted_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  verified_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  decided_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  submitted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  verified_at DATETIME(3) NULL,
+  decided_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_controlled_substance_permits_number (permit_number),
+  KEY ix_controlled_substance_permits_queue (status, submitted_at),
+  CONSTRAINT fk_controlled_permits_submitted_by FOREIGN KEY (submitted_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_controlled_permits_verified_by FOREIGN KEY (verified_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_controlled_permits_decided_by FOREIGN KEY (decided_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS controlled_substance_quota_usage (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  quota_year SMALLINT UNSIGNED NOT NULL,
+  substance_name VARCHAR(200) NOT NULL,
+  schedule_code ENUM('SCHEDULE_5', 'SCHEDULE_6', 'SCHEDULE_7', 'SCHEDULE_8') NOT NULL,
+  allocated_quantity DECIMAL(18, 3) NOT NULL,
+  used_quantity DECIMAL(18, 3) NOT NULL DEFAULT 0,
+  unit VARCHAR(40) NOT NULL,
+  updated_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_controlled_quota_substance_year (quota_year, substance_name, schedule_code),
+  CONSTRAINT fk_controlled_quota_updated_by FOREIGN KEY (updated_by)
+    REFERENCES app_users (id) ON DELETE RESTRICT,
+  CONSTRAINT chk_controlled_quota_amounts CHECK (allocated_quantity >= 0 AND used_quantity >= 0)
 ) ENGINE=InnoDB;

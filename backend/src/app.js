@@ -4,6 +4,10 @@ const { createAuthRouter } = require('./routes/auth');
 const { randomUUID } = require('node:crypto');
 const { createAdminInvitationRouter } = require('./routes/admin-invitations');
 const { createOfficerReplacementRouter } = require('./routes/officer-replacements');
+const { createAccountRecoveryRouter } = require('./routes/account-recovery');
+const { createMedicineRegistrationRouter } = require('./routes/medicine-registrations');
+const { createEstablishmentLicensingRouter } = require('./routes/establishment-licensing');
+const { createImportExportControlledRouter } = require('./routes/import-export-controlled');
 const { createSessionMiddleware } = require('./middleware/session');
 
 function createApp({ database }) {
@@ -55,6 +59,22 @@ function createApp({ database }) {
       }),
     );
     app.use(
+      '/api/v1/account-recovery',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createAccountRecoveryRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
+    app.use(
       '/api/v1/officer-replacements',
       (req, res, next) => {
         if (process.env.NODE_ENV === 'production' && !req.secure) {
@@ -66,6 +86,54 @@ function createApp({ database }) {
         return next();
       },
       createOfficerReplacementRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
+    app.use(
+      '/api/v1/medicine-registrations',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createMedicineRegistrationRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
+    app.use(
+      '/api/v1/establishment-licensing',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createEstablishmentLicensingRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
+    app.use(
+      '/api/v1/import-export-controlled',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createImportExportControlledRouter({
         database,
         authenticate: createSessionMiddleware(database),
       }),
@@ -90,10 +158,10 @@ function createApp({ database }) {
     const schemaMessage = String(error.sqlMessage || '');
     const migrationRequired = (
       error.code === 'ER_NO_SUCH_TABLE' &&
-      /admin_invitations|officer_replacement_requests|auth_login_attempts|role_permissions|\broles\b/i.test(schemaMessage)
+      /admin_bootstrap_challenges|admin_invitations|officer_replacement_requests|user_recovery_codes|account_recovery_requests|account_recovery_approvals|registration_applications|registration_evaluations|establishment_applications|establishment_inspections|controlled_substance_permits|controlled_substance_quota_usage|auth_login_attempts|role_permissions|\broles\b/i.test(schemaMessage)
     ) || (
       error.code === 'ER_BAD_FIELD_ERROR' &&
-      /role_code|actor_role_code|actor_role_label|officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at|mfa_enrollment_secret_encrypted|setup_totp_secret_encrypted/i.test(schemaMessage)
+      /role_code|actor_role_code|actor_role_label|officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at|mfa_enrollment_secret_encrypted|setup_totp_secret_encrypted|registration_applications|registration_evaluations/i.test(schemaMessage)
     );
     if (migrationRequired) {
       return res.status(503).json({

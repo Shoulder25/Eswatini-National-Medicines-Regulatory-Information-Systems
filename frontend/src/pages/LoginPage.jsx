@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
+import PasswordInput from '../components/PasswordInput.jsx';
 
 function Brand({ inverse = false }) {
   return (
@@ -21,9 +22,13 @@ function Brand({ inverse = false }) {
 export default function LoginPage() {
   const navigate = useNavigate();
   const { phase, user, error: sessionError, signIn, retry } = useAuth();
+  const [step, setStep] = useState(1);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [totpCode, setTotpCode] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [usingRecoveryCode, setUsingRecoveryCode] = useState(false);
   const [formError, setFormError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -34,10 +39,17 @@ export default function LoginPage() {
     setFormError(null);
     setSubmitting(true);
     try {
-      const result = await signIn({ email: email.trim(), password, totpCode: totpCode.trim() });
-      setPassword('');
-      setTotpCode('');
+      const result = await signIn({
+        email: email.trim(),
+        password,
+        ...(step === 2
+          ? (usingRecoveryCode
+            ? { recoveryCode: recoveryCode.trim() }
+            : { totpCode: totpCode.trim() })
+          : {}),
+      });
       if (result?.mfaEnrollmentRequired) navigate('/enroll-officer-mfa', { replace: true });
+      if (result?.mfaRequired) setStep(2);
     } catch (error) {
       setFormError(error);
     } finally {
@@ -45,9 +57,17 @@ export default function LoginPage() {
     }
   }
 
+  function returnToCredentials() {
+    setStep(1);
+    setTotpCode('');
+    setRecoveryCode('');
+    setUsingRecoveryCode(false);
+    setFormError(null);
+  }
+
   return (
-    <main className="min-h-screen bg-mist lg:grid lg:grid-cols-[minmax(380px,0.9fr)_1.1fr]">
-      <aside className="relative hidden min-h-screen overflow-hidden bg-ink px-12 py-10 text-white lg:flex lg:flex-col lg:justify-between xl:px-20">
+    <main className="h-screen overflow-hidden bg-mist">
+      <aside className="hidden">
         <div className="absolute -right-32 top-28 h-96 w-96 rounded-full border border-white/10" aria-hidden="true" />
         <div className="absolute -right-16 top-44 h-64 w-64 rounded-full border border-white/10" aria-hidden="true" />
         <div className="absolute bottom-20 right-20 h-40 w-40 rounded-full bg-teal/20 blur-3xl" aria-hidden="true" />
@@ -69,17 +89,21 @@ export default function LoginPage() {
         </div>
       </aside>
 
-      <section className="flex min-h-screen items-center justify-center px-5 py-10 sm:px-8 lg:px-12">
+      <section className="flex h-full items-center justify-center px-5 py-2 sm:px-8">
         <div className="w-full max-w-[460px]">
-          <div className="mb-9 lg:hidden">
-            <Brand />
-          </div>
-          <div className="rounded-[28px] border border-slate-200/80 bg-white p-7 shadow-card sm:p-10">
-            <div className="mb-8">
-              <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal">Staff portal</p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-tight text-ink">Welcome back</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                Sign in with your staff account to continue.
+          <div className="rounded-[28px] border border-slate-200/80 bg-white p-4 text-center shadow-card sm:p-6">
+            <div className="mb-2 text-center">
+              <img alt="eNMRIS" className="mx-auto h-20 w-32 rounded-xl object-contain" src="/logo.jpg" />
+            </div>
+            <div className="mb-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-teal">Staff portal · Step {step} of 2</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-ink">
+                {step === 1 ? 'Welcome back' : 'Verify your authenticator'}
+              </h2>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                {step === 1
+                  ? 'Enter your work email and password to continue.'
+                  : 'Enter the current 6-digit code from your authenticator app.'}
               </p>
             </div>
 
@@ -101,74 +125,86 @@ export default function LoginPage() {
               </div>
             )}
 
-            <form className="space-y-5" onSubmit={handleSubmit}>
-              <div>
-                <label className="field-label" htmlFor="email">Work email</label>
-                <input
-                  autoComplete="username"
-                  className="field-input"
-                  id="email"
-                  name="email"
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="name@organization.org"
-                  required
-                  type="email"
-                  value={email}
-                />
-              </div>
-
-              <div>
-                <label className="field-label" htmlFor="password">Password</label>
-                <input
-                  autoComplete="current-password"
-                  className="field-input"
-                  id="password"
-                  name="password"
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                  type="password"
-                  value={password}
-                />
-              </div>
-
-              <div>
-                <div className="flex items-end justify-between gap-3">
-                  <label className="field-label mb-0" htmlFor="totpCode">Authenticator code</label>
-                  <span className="text-xs font-medium text-slate-500">6 digits, if enrolled</span>
+            <form className="space-y-4" onSubmit={handleSubmit}>
+              {step === 1 ? (
+                <>
+                  <div>
+                    <label className="field-label text-left text-xs" htmlFor="email">Work email</label>
+                    <input
+                      autoComplete="username"
+                      className="field-input py-2 text-left"
+                      id="email"
+                      name="email"
+                      onChange={(event) => setEmail(event.target.value)}
+                      placeholder="name@organization.org"
+                      required
+                      type="email"
+                      value={email}
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label text-left text-xs" htmlFor="password">Password</label>
+                    <PasswordInput
+                      autoComplete="current-password"
+                      className="py-2"
+                      id="password"
+                      name="password"
+                      onChange={(event) => setPassword(event.target.value)}
+                      onToggle={() => setShowPassword((current) => !current)}
+                      required
+                      value={password}
+                      visible={showPassword}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="field-label text-left text-xs" htmlFor={usingRecoveryCode ? 'recoveryCode' : 'totpCode'}>
+                    {usingRecoveryCode ? 'Recovery code' : 'Authenticator code'}
+                  </label>
+                  <input
+                    autoComplete="one-time-code"
+                    autoFocus
+                    className="field-input mt-2 py-2 text-left font-mono text-lg tracking-[0.2em]"
+                    id={usingRecoveryCode ? 'recoveryCode' : 'totpCode'}
+                    inputMode={usingRecoveryCode ? 'text' : 'numeric'}
+                    maxLength={usingRecoveryCode ? 10 : 6}
+                    onChange={(event) => (usingRecoveryCode
+                      ? setRecoveryCode(event.target.value.replace(/[^a-z0-9]/gi, '').slice(0, 10).toUpperCase())
+                      : setTotpCode(event.target.value.replace(/\D/g, '').slice(0, 6)))}
+                    pattern={usingRecoveryCode ? '[A-Fa-f0-9]{10}' : '[0-9]{6}'}
+                    placeholder={usingRecoveryCode ? 'XXXXXXXXXX' : '000000'}
+                    required
+                    type="text"
+                    value={usingRecoveryCode ? recoveryCode : totpCode}
+                  />
                 </div>
-                <input
-                  autoComplete="one-time-code"
-                  className="field-input mt-2 text-center font-mono text-lg tracking-[0.45em]"
-                  id="totpCode"
-                  inputMode="numeric"
-                  maxLength={6}
-                  name="totpCode"
-                  onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                  placeholder="••••••"
-                  type="text"
-                  value={totpCode}
-                />
-                <p className="mt-2 text-xs leading-5 text-slate-500">
-                  Enter your current authenticator code. Board Officers can leave this blank on their first sign-in to enroll.
-                </p>
-              </div>
+              )}
 
               <button className="button-primary w-full" disabled={submitting} type="submit">
-                {submitting ? 'Signing in…' : 'Sign in securely'}
+                {submitting ? 'Checking securely…' : step === 1 ? 'Continue' : 'Sign in securely'}
                 {!submitting && <span aria-hidden="true">→</span>}
               </button>
             </form>
 
-            <div className="mt-7 flex items-start gap-3 border-t border-slate-100 pt-5 text-xs leading-5 text-slate-500">
-              <svg className="mt-0.5 h-4 w-4 shrink-0 text-teal" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 10V7a5 5 0 0 1 10 0v3m-11 0h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
-              </svg>
+            {step === 2 && (
+              <>
+                <button className="mt-4 w-full text-sm font-semibold text-teal hover:text-ink" onClick={() => setUsingRecoveryCode((current) => !current)} type="button">
+                  {usingRecoveryCode ? 'Use authenticator code instead' : 'Use a recovery code instead'}
+                </button>
+                <button className="mt-2 w-full text-sm font-semibold text-slate-600 hover:text-ink" onClick={returnToCredentials} type="button">
+                  ← Use a different account
+                </button>
+              </>
+            )}
+
+            <div className="mt-4 border-t border-slate-100 pt-3 text-center text-xs leading-5 text-slate-500">
               <p>Your session is protected and expires after 20 minutes of inactivity.</p>
+              <a className="mt-2 inline-block font-semibold text-teal hover:underline" href="/bootstrap-admin">
+                First-time setup
+              </a>
             </div>
           </div>
-          <p className="mt-6 text-center text-xs text-slate-500">
-            Need access? Contact your system administrator.
-          </p>
         </div>
       </section>
     </main>

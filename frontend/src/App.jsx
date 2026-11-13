@@ -4,9 +4,15 @@ import DashboardPage from './pages/DashboardPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import AdminInvitationsPage from './pages/AdminInvitationsPage.jsx';
 import AdminSetupPage from './pages/AdminSetupPage.jsx';
+import AdminBootstrapPage from './pages/AdminBootstrapPage.jsx';
 import OfficerMfaEnrollmentPage from './pages/OfficerMfaEnrollmentPage.jsx';
 import OfficerReplacementsPage from './pages/OfficerReplacementsPage.jsx';
 import OfficerSetupPage from './pages/OfficerSetupPage.jsx';
+import AccountRecoveryPage from './pages/AccountRecoveryPage.jsx';
+import RecoverySetupPage from './pages/RecoverySetupPage.jsx';
+import MedicineRegistrationsPage from './pages/MedicineRegistrationsPage.jsx';
+import EstablishmentLicensingPage from './pages/EstablishmentLicensingPage.jsx';
+import ImportExportControlledPage from './pages/ImportExportControlledPage.jsx';
 
 function LoadingScreen({ message = 'Checking your secure session…' }) {
   return (
@@ -56,7 +62,9 @@ export default function App() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/setup-admin" element={<AdminSetupPage />} />
+      <Route path="/bootstrap-admin" element={<AdminBootstrapPage />} />
       <Route path="/setup-officer" element={<OfficerSetupPage />} />
+      <Route path="/recovery-setup" element={<RecoverySetupPage />} />
       <Route path="/enroll-officer-mfa" element={<OfficerMfaEnrollmentPage />} />
       <Route path="/dashboard" element={<ProtectedDashboard />} />
       <Route
@@ -72,6 +80,38 @@ export default function App() {
         element={(
           <ProtectedDashboard>
             <OfficerReplacementsPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/account-recovery"
+        element={(
+          <ProtectedDashboard>
+            <AccountRecoveryPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/medicine-registrations"
+        element={(
+          <ProtectedDashboard>
+            <MedicineRegistrationsPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/establishment-licensing"
+        element={(
+          <ProtectedDashboard>
+            <EstablishmentLicensingPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/import-export-controlled"
+        element={(
+          <ProtectedDashboard>
+            <ImportExportControlledPage />
           </ProtectedDashboard>
         )}
       />

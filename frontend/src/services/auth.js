@@ -40,10 +40,10 @@ async function request(path, { method = 'GET', body } = {}) {
   return payload?.data;
 }
 
-export function login({ email, password, totpCode }) {
+export function login({ email, password, totpCode, recoveryCode }) {
   return request('/login', {
     method: 'POST',
-    body: { email, password, totpCode },
+    body: { email, password, totpCode, recoveryCode },
   });
 }
 
@@ -51,6 +51,20 @@ export function completeOfficerMfaEnrollment({ enrollmentToken, totpCode }) {
   return request('/mfa/enrollment/complete', {
     method: 'POST',
     body: { enrollmentToken, totpCode },
+  });
+}
+
+export function prepareAdminBootstrap({ name, email, password }) {
+  return request('/bootstrap/prepare', {
+    method: 'POST',
+    body: { name, email, password },
+  });
+}
+
+export function completeAdminBootstrap({ token, totpCode }) {
+  return request('/bootstrap/complete', {
+    method: 'POST',
+    body: { token, totpCode },
   });
 }
 

@@ -28,9 +28,11 @@ approved for use.
 1. In MySQL Workbench, on a fresh database run `database/01_schema.sql`, then
    `database/02_seed.sql`. On an existing database, apply
    `database/03_auth_login_attempts.sql` if needed, then apply migrations 04,
-   05, 06, 07, and 08 once and in order before restarting. Migration 05 depends on
-   04, migration 06 depends on 05, migration 07 depends on 06, and migration 08
-   depends on 07. Do not rerun
+   05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, and 16 once and in order before restarting.
+   Migration 05 depends on 04, migration 06 depends on 05, migration 07 depends on
+   06, migration 08 depends on 07, migration 09 depends on 08, migration 10
+   depends on 09, migration 11 depends on 10, migration 12 depends on 11, and
+   migration 13 depends on 12, migration 14 depends on 13, migration 15 depends on 14, and migration 16 depends on 15. Do not rerun
    numbered migrations or run the fresh-install schema over an existing DB.
    To verify the import, run
    `SELECT COUNT(*) FROM enmris.products;` and
@@ -39,7 +41,8 @@ approved for use.
    `SELECT`/`INSERT` on `app_users`, column-scoped `UPDATE` on
    `app_users.totp_last_used_step` and `app_users.active`,
    `SELECT`/`INSERT`/`UPDATE` on `app_sessions`, `auth_login_attempts`,
-   `admin_invitations`, and `officer_replacement_requests`, `SELECT` on
+   `admin_invitations`, and `officer_replacement_requests`, and
+   `SELECT`/`INSERT`/`DELETE` on `admin_bootstrap_challenges`, `SELECT` on
    `roles`, `role_permissions`, and `app_user_permissions`, and `SELECT`/`INSERT`
    on `audit_log`. Grant
    column-scoped `UPDATE` on `app_users` for
@@ -73,11 +76,13 @@ approved for use.
    persistent and private; changing them makes stored authenticator secrets
    unreadable and resets the login-rate-limit hashes. Never commit `.env`.
 4. Run `npm install` and `npm test`.
-5. On a new database with no users, run `npm run admin:create`. This interactive
-   command creates the first Admin, hashes the password, and displays a one-time
-   authenticator setup URI. Add it to an authenticator app and confirm the
-   current time-based one-time password (TOTP) when prompted. The URI contains a
-   secret: do not share or save it in source control.
+5. On a new database with no users, start the backend and open
+   `/bootstrap-admin` in the frontend. Enter the first Administrator's details,
+   add the displayed QR code or setup key to an authenticator app, and confirm
+   the current six-digit code. The setup page is available only while the
+   database has no users. The URI contains a secret: do not share or save it in
+   source control. The equivalent trusted local command is `npm run admin:create`
+   from `backend`.
 6. After the first Admin exists, run `npm run officer:bootstrap` twice, once
    for each position: `BOARD_CHAIR` and `BOARD_VICE_CHAIR`. Each command prompts
    for the Officer's name, allowlisted email, and password. Officers enroll an

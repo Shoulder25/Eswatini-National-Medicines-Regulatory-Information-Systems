@@ -1,11 +1,12 @@
 -- CMS Products Template.xlsx seed data.
 -- Imports 19 products and 18 product/programme links; trailing legend rows are excluded.
--- Run once after 01_schema.sql. Product codes remain text.
+-- Run after 01_schema.sql. Product codes remain text.
+-- Safe to rerun; existing products and programme links are preserved.
 USE enmris;
 SET time_zone = '+00:00';
 START TRANSACTION;
 
-INSERT INTO products (
+INSERT IGNORE INTO products (
   id, product_code, dispensable, name, description, pack_size,
   pack_rounding_threshold, round_to_zero
 ) VALUES
@@ -29,7 +30,7 @@ INSERT INTO products (
   (UUID(), '100025', 'dispensingUnit:each', 'Cotrimoxazole Tablets 400-80mg 1000 TABS', 'Cotrimoxazole Tablets 400-80mg 1000 TABS', 1000, 1, 0),
   (UUID(), '100026', 'dispensingUnit:each', 'Cotrimoxazole Tablets 800-160mg 1000 TABS', 'Cotrimoxazole Tablets 800-160mg 1000 TABS', 1000, 1, 0);
 
-INSERT INTO product_programmes (
+INSERT IGNORE INTO product_programmes (
   id, product_id, program, doses_per_patient, active, category,
   full_supply, display_order, price_per_pack
 )

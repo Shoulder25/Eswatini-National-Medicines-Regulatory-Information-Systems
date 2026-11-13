@@ -5,6 +5,7 @@ import {
   inspectOfficerSetupToken,
 } from '../services/officerReplacements.js';
 import AuthenticatorEnrollment from '../components/AuthenticatorEnrollment.jsx';
+import PasswordInput from '../components/PasswordInput.jsx';
 
 export default function OfficerSetupPage() {
   const location = useLocation();
@@ -13,6 +14,8 @@ export default function OfficerSetupPage() {
   const [officer, setOfficer] = useState(null);
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmation, setShowConfirmation] = useState(false);
   const [totpCode, setTotpCode] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -108,11 +111,11 @@ export default function OfficerSetupPage() {
               <form className="mt-7 grid gap-5" onSubmit={submit}>
                 <label className="field-label">
                   Password (at least 12 characters)
-                  <input autoComplete="new-password" className="field-input" maxLength={1024} minLength={12} onChange={(event) => setPassword(event.target.value)} required type="password" value={password} />
+                  <PasswordInput autoComplete="new-password" maxLength={1024} minLength={12} onChange={(event) => setPassword(event.target.value)} onToggle={() => setShowPassword((current) => !current)} required value={password} visible={showPassword} />
                 </label>
                 <label className="field-label">
                   Confirm password
-                  <input autoComplete="new-password" className="field-input" maxLength={1024} minLength={12} onChange={(event) => setConfirmation(event.target.value)} required type="password" value={confirmation} />
+                  <PasswordInput autoComplete="new-password" maxLength={1024} minLength={12} onChange={(event) => setConfirmation(event.target.value)} onToggle={() => setShowConfirmation((current) => !current)} required value={confirmation} visible={showConfirmation} />
                 </label>
                 <label className="field-label">
                   Current authenticator code

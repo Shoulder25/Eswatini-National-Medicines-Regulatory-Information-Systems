@@ -1,15 +1,45 @@
--- Apply once after 05_admin_tester_and_officer_mfa.sql on an existing database.
+-- Apply after 05_admin_tester_and_officer_mfa.sql on an existing database.
+-- Safe to rerun when the role schema was already converted by migration 07.
 USE enmris;
 
-ALTER TABLE app_users
-  MODIFY COLUMN role ENUM('ADMIN', 'OFFICER', 'ADMIN_TESTER', 'HEAD_OF_IT') NOT NULL,
-  DROP CHECK chk_app_users_officer_position,
-  ADD CONSTRAINT chk_app_users_officer_position CHECK (
-    role = 'OFFICER'
-    OR (role IN ('ADMIN', 'ADMIN_TESTER', 'HEAD_OF_IT') AND officer_position IS NULL)
-  );
+DELIMITER //
 
-CREATE TABLE officer_replacement_requests (
+DROP PROCEDURE IF EXISTS update_legacy_officer_role_constraint //
+
+CREATE PROCEDURE update_legacy_officer_role_constraint()
+BEGIN
+  DECLARE role_column_count INT DEFAULT 0;
+  DECLARE role_code_column_count INT DEFAULT 0;
+
+  SELECT COUNT(*) INTO role_column_count
+    FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'app_users'
+     AND COLUMN_NAME = 'role';
+
+  SELECT COUNT(*) INTO role_code_column_count
+    FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'app_users'
+     AND COLUMN_NAME = 'role_code';
+
+  IF role_column_count > 0 AND role_code_column_count = 0 THEN
+    ALTER TABLE app_users
+      MODIFY COLUMN role ENUM('ADMIN', 'OFFICER', 'ADMIN_TESTER', 'HEAD_OF_IT') NOT NULL,
+      DROP CHECK chk_app_users_officer_position,
+      ADD CONSTRAINT chk_app_users_officer_position CHECK (
+        role = 'OFFICER'
+        OR (role IN ('ADMIN', 'ADMIN_TESTER', 'HEAD_OF_IT') AND officer_position IS NULL)
+      );
+  END IF;
+END //
+
+CALL update_legacy_officer_role_constraint() //
+DROP PROCEDURE update_legacy_officer_role_constraint //
+
+DELIMITER ;
+
+CREATE TABLE IF NOT EXISTS officer_replacement_requests (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   request_type ENUM('HEAD_OF_IT', 'EMERGENCY_BOOTSTRAP') NOT NULL,
   requested_by CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,

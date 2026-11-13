@@ -6,17 +6,19 @@ async function getEffectivePermissions(connection, {
   userId,
   roleCode,
   positionCode = null,
+  functionalRoleCode = null,
 }) {
+  const roleCodes = [roleCode, positionCode, functionalRoleCode].filter(Boolean);
   const [rows] = await connection.execute(
     `SELECT rp.permission_code FROM role_permissions rp
      JOIN roles r ON r.role_code = rp.role_code AND r.active = TRUE
-     WHERE rp.role_code IN (?, ?)
+     WHERE rp.role_code IN (${roleCodes.map(() => '?').join(', ')})
      UNION
      SELECT permission_code FROM app_user_permissions
      WHERE user_id = ? AND revoked_at IS NULL
        AND permission_code NOT IN (${ROLE_MANAGED_PERMISSIONS.map(() => '?').join(', ')})
      ORDER BY permission_code`,
-    [roleCode, positionCode || '', userId, ...ROLE_MANAGED_PERMISSIONS],
+    [...roleCodes, userId, ...ROLE_MANAGED_PERMISSIONS],
   );
   return rows.map((row) => row.permission_code);
 }

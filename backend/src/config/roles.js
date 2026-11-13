@@ -7,6 +7,13 @@ const ROLE_CODES = Object.freeze({
   BOARD_VICE_CHAIR: 'BOARD_VICE_CHAIR',
   SYSTEM: 'SYSTEM',
   CLIENT: 'CLIENT',
+  SENIOR_REGISTRAR: 'SENIOR_REGISTRAR',
+  PRODUCT_REGISTRATION: 'PRODUCT_REGISTRATION',
+  ESTABLISHMENT_LICENSING: 'ESTABLISHMENT_LICENSING',
+  IMPORT_EXPORT_CONTROLLED: 'IMPORT_EXPORT_CONTROLLED',
+  PHARMACOVIGILANCE: 'PHARMACOVIGILANCE',
+  CLINICAL_COMPLIANCE: 'CLINICAL_COMPLIANCE',
+  IT_ADMINISTRATOR: 'IT_ADMINISTRATOR',
 });
 
 const PERMISSION_CODES = Object.freeze({
@@ -14,6 +21,18 @@ const PERMISSION_CODES = Object.freeze({
   APPROVE_ADMIN_REPLACEMENT: 'approve_admin_replacement',
   START_REPLACEMENT: 'start_replacement',
   APPROVE_REPLACEMENT: 'approve_replacement',
+  APPROVE_REGULATORY_DECISIONS: 'approve_regulatory_decisions',
+  MANAGE_REGISTRATION: 'manage_registration',
+  EVALUATE_REGISTRATION: 'evaluate_registration',
+  MANAGE_ESTABLISHMENT_LICENSING: 'manage_establishment_licensing',
+  CONDUCT_INSPECTIONS: 'conduct_inspections',
+  MANAGE_IMPORT_EXPORT_PERMITS: 'manage_import_export_permits',
+  MANAGE_CONTROLLED_SUBSTANCES: 'manage_controlled_substances',
+  MANAGE_PHARMACOVIGILANCE: 'manage_pharmacovigilance',
+  MANAGE_RECALLS: 'manage_recalls',
+  MANAGE_CLINICAL_TRIALS: 'manage_clinical_trials',
+  MANAGE_COMPLIANCE_CASES: 'manage_compliance_cases',
+  MANAGE_SYSTEM: 'manage_system',
 });
 
 const REPLACEMENT_REQUEST_TYPES = Object.freeze({

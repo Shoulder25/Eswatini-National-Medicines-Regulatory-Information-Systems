@@ -103,6 +103,11 @@ function hashSessionToken(token) {
   return crypto.createHash('sha256').update(token).digest();
 }
 
+function createRecoveryCodes(count = 10) {
+  return Array.from({ length: count }, () =>
+    crypto.randomBytes(8).toString('hex').toUpperCase().slice(0, 10));
+}
+
 function createLoginBucket(email, ipAddress, encodedKey) {
   const key = decodeKey(encodedKey, 'AUTH_RATE_LIMIT_KEY');
   return crypto.createHmac('sha256', key)
@@ -119,6 +124,7 @@ module.exports = {
   encryptTotpSecret,
   getTotpStep,
   hashPassword,
+  createRecoveryCodes,
   hashSessionToken,
   verifyPassword,
   verifyTotpCode,

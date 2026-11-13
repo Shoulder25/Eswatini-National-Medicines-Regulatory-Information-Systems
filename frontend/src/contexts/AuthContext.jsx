@@ -71,6 +71,9 @@ export function AuthProvider({ children }) {
       });
       return { mfaEnrollmentRequired: true };
     }
+    if (result.mfaRequired) {
+      return { mfaRequired: true };
+    }
     const session = result;
     setUser(session.user);
     setIdleTimeoutMinutes(session.idleTimeoutMinutes);
@@ -92,6 +95,7 @@ export function AuthProvider({ children }) {
     setPendingMfaEnrollment(null);
     setError(null);
     setPhase('authenticated');
+    return session;
   }, [pendingMfaEnrollment]);
 
   const signOut = useCallback(async () => {

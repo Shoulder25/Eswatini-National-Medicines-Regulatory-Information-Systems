@@ -9,9 +9,11 @@ const {
   ROLE_CODES,
 } = require('../config/roles');
 const { writeAudit } = require('../services/audit');
+const { validateEmailAddress } = require('../services/email-domain');
 const { getEffectivePermissions } = require('../services/permissions');
 const {
   createLoginBucket,
+  createRecoveryCodes,
   createTotpEnrollment,
   decodeKey,
   decryptTotpSecret,
@@ -27,6 +29,7 @@ const IDLE_TIMEOUT_MINUTES = 20;
 const LOGIN_WINDOW_MINUTES = 15;
 const MAX_LOGIN_FAILURES = 5;
 const MFA_ENROLLMENT_TIMEOUT_MINUTES = 10;
+const ADMIN_BOOTSTRAP_TIMEOUT_MINUTES = 15;
 
 const dummyPasswordHash = hashPassword('invalid-login-placeholder-never-used');
 
@@ -42,6 +45,10 @@ function errorResponse(res, req, status, code, message, retryAfter) {
 
 function sessionCookie(token, secure) {
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/api/v1; HttpOnly; SameSite=Lax; Max-Age=${IDLE_TIMEOUT_MINUTES * 60}${secure ? '; Secure' : ''}`;
+}
+
+function validBootstrapToken(token) {
+  return typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token);
 }
 
 async function completeOfficerReplacement(connection, user, requestId) {
@@ -178,13 +185,19 @@ function createAuthRouter({ database }) {
   });
 
   router.post('/login', async (req, res, next) => {
-    const { email, password, totpCode } = req.body || {};
+    const { email, password, totpCode, recoveryCode } = req.body || {};
     const suppliedTotpCode = typeof totpCode === 'string' ? totpCode : '';
+    const suppliedRecoveryCode = typeof recoveryCode === 'string'
+      ? recoveryCode.trim().toUpperCase()
+      : '';
     if (
       typeof email !== 'string' || email.length > 254 ||
       typeof password !== 'string' || password.length > 1024 ||
       (totpCode !== undefined && typeof totpCode !== 'string') ||
-      (suppliedTotpCode !== '' && !/^\d{6}$/.test(suppliedTotpCode))
+      (suppliedTotpCode !== '' && !/^\d{6}$/.test(suppliedTotpCode)) ||
+      (recoveryCode !== undefined && typeof recoveryCode !== 'string') ||
+      (suppliedRecoveryCode !== '' && !/^[A-F0-9]{10}$/.test(suppliedRecoveryCode)) ||
+      (suppliedTotpCode !== '' && suppliedRecoveryCode !== '')
     ) {
       return errorResponse(res, req, 400, 'INVALID_REQUEST', 'Valid email, password, and authenticator code are required');
     }
@@ -234,12 +247,14 @@ function createAuthRouter({ database }) {
       const [users] = await connection.execute(
         `SELECT u.id, u.name, u.email, u.password_hash,
                 u.role_code AS role, u.role_code,
-                account_role.display_label AS role_label, u.officer_position,
+                account_role.display_label AS role_label, u.officer_position, u.functional_role_code,
                 position_role.display_label AS officer_position_label,
+                functional_role.display_label AS functional_role_label,
                 u.totp_secret_encrypted, u.totp_last_used_step, u.mfa_enabled
          FROM app_users u
          JOIN roles account_role ON account_role.role_code = u.role_code
          LEFT JOIN roles position_role ON position_role.role_code = u.officer_position
+         LEFT JOIN roles functional_role ON functional_role.role_code = u.functional_role_code
          WHERE u.email = ? AND u.active = TRUE LIMIT 1 FOR UPDATE`,
         [email.trim()],
       );
@@ -253,6 +268,7 @@ function createAuthRouter({ database }) {
           userId: user.id,
           roleCode: user.role_code,
           positionCode: user.officer_position,
+          functionalRoleCode: user.functional_role_code,
         })
         : [];
       if (user && user.role === ROLE_CODES.ADMIN_TESTER && production && passwordMatches) {
@@ -335,9 +351,22 @@ function createAuthRouter({ database }) {
               roleLabel: user.role_label,
               officerPosition: user.officer_position,
               officerPositionLabel: user.officer_position_label,
+              functionalRoleCode: user.functional_role_code,
+              functionalRoleLabel: user.functional_role_label,
             },
           },
         });
+      }
+
+      if (
+        user &&
+        passwordMatches &&
+        user.mfa_enabled &&
+        user.totp_secret_encrypted &&
+        suppliedTotpCode === ''
+      ) {
+        await connection.commit();
+        return res.status(200).json({ data: { mfaRequired: true } });
       }
 
       let codeStep = null;
@@ -357,8 +386,25 @@ function createAuthRouter({ database }) {
         );
         codeMatches = consumed.affectedRows === 1;
       }
+      let recoveryCodeMatches = false;
+      if (user && passwordMatches && suppliedRecoveryCode !== '' && suppliedTotpCode === '') {
+        const [recoveryRows] = await connection.execute(
+          `SELECT id FROM user_recovery_codes
+           WHERE user_id = ? AND code_hash = ? AND used_at IS NULL
+           LIMIT 1 FOR UPDATE`,
+          [user.id, hashSessionToken(suppliedRecoveryCode)],
+        );
+        if (recoveryRows[0]) {
+          const [consumed] = await connection.execute(
+            `UPDATE user_recovery_codes SET used_at = UTC_TIMESTAMP(3)
+             WHERE id = ? AND used_at IS NULL`,
+            [recoveryRows[0].id],
+          );
+          recoveryCodeMatches = consumed.affectedRows === 1;
+        }
+      }
 
-      if (!user || !user.mfa_enabled || !passwordMatches || !codeMatches) {
+      if (!user || !user.mfa_enabled || !passwordMatches || (!codeMatches && !recoveryCodeMatches)) {
         failures += 1;
         const lock = failures >= MAX_LOGIN_FAILURES;
         await connection.execute(
@@ -433,9 +479,18 @@ function createAuthRouter({ database }) {
         action: 'LOGIN_SUCCEEDED',
         entityName: 'app_sessions',
         recordId: sessionId,
-        afterValue: { actorRoleCode: user.role_code },
+        afterValue: { actorRoleCode: user.role_code, mfaMethod: recoveryCodeMatches ? 'RECOVERY_CODE' : 'TOTP' },
         requestId: req.requestId,
       });
+      if (recoveryCodeMatches) {
+        await writeAudit(connection, {
+          actorId: user.id,
+          action: 'RECOVERY_CODE_USED',
+          entityName: 'user_recovery_codes',
+          afterValue: { method: 'RECOVERY_CODE' },
+          requestId: req.requestId,
+        });
+      }
       await connection.commit();
       res.setHeader('Set-Cookie', sessionCookie(token, production));
       return res.status(200).json({
@@ -449,6 +504,8 @@ function createAuthRouter({ database }) {
             roleLabel: user.role_label,
             officerPosition: user.officer_position,
             officerPositionLabel: user.officer_position_label,
+            functionalRoleCode: user.functional_role_code,
+            functionalRoleLabel: user.functional_role_label,
             permissions,
           },
           idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES,
@@ -466,6 +523,180 @@ function createAuthRouter({ database }) {
       if (connection) {
         connection.release();
       }
+    }
+  });
+
+  router.post('/bootstrap/prepare', async (req, res, next) => {
+    const { name, email: emailInput, password } = req.body || {};
+    if (
+      typeof name !== 'string' || !name.trim() || name.length > 160 ||
+      typeof emailInput !== 'string' ||
+      typeof password !== 'string' || password.length < 12 || password.length > 1024
+    ) {
+      return errorResponse(res, req, 400, 'INVALID_REQUEST', 'A valid name, approved email, and password are required');
+    }
+
+    const email = validateEmailAddress(emailInput);
+    if (!email.valid) {
+      return errorResponse(res, req, 400, 'EMAIL_NOT_ALLOWED', 'The email address is not allowed by the configured policy');
+    }
+
+    try {
+      decodeKey(process.env.AUTH_ENCRYPTION_KEY, 'AUTH_ENCRYPTION_KEY');
+      decodeKey(process.env.AUTH_RATE_LIMIT_KEY, 'AUTH_RATE_LIMIT_KEY');
+    } catch (error) {
+      console.error('Admin bootstrap configuration error:', error.message);
+      return errorResponse(res, req, 503, 'AUTH_UNAVAILABLE', 'Authentication is not configured');
+    }
+
+    const token = crypto.randomBytes(32).toString('base64url');
+    const enrollment = createTotpEnrollment(name.trim());
+    let connection;
+    let lockAcquired = false;
+    try {
+      connection = await getUtcConnection(database);
+      const [lockRows] = await connection.execute(
+        'SELECT GET_LOCK(?, 5) AS acquired',
+        ['enmris_bootstrap_admin'],
+      );
+      lockAcquired = Number(lockRows[0].acquired) === 1;
+      if (!lockAcquired) {
+        return errorResponse(res, req, 503, 'BOOTSTRAP_BUSY', 'Administrator setup is busy; try again');
+      }
+
+      await connection.beginTransaction();
+      const [users] = await connection.execute('SELECT COUNT(*) AS count FROM app_users');
+      if (Number(users[0].count) !== 0) {
+        await connection.rollback();
+        return errorResponse(res, req, 409, 'BOOTSTRAP_NOT_AVAILABLE', 'Administrator setup is available only on a fresh database');
+      }
+
+      await connection.execute(
+        `INSERT INTO admin_bootstrap_challenges
+           (id, name, email, password_hash, token_hash, totp_secret_encrypted, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? MINUTE))`,
+        [
+          crypto.randomUUID(),
+          name.trim(),
+          email.email,
+          await hashPassword(password),
+          hashSessionToken(token),
+          encryptTotpSecret(enrollment.secret, process.env.AUTH_ENCRYPTION_KEY),
+          ADMIN_BOOTSTRAP_TIMEOUT_MINUTES,
+        ],
+      );
+      await connection.commit();
+      return res.status(200).json({
+        data: {
+          token,
+          name: name.trim(),
+          email: email.email,
+          expiresInMinutes: ADMIN_BOOTSTRAP_TIMEOUT_MINUTES,
+          totpSecret: enrollment.secret,
+          otpauthUri: enrollment.uri,
+        },
+      });
+    } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
+      return next(error);
+    } finally {
+      if (connection && lockAcquired) {
+        await connection.execute('SELECT RELEASE_LOCK(?)', ['enmris_bootstrap_admin']).catch(() => {});
+      }
+      if (connection) connection.release();
+    }
+  });
+
+  router.post('/bootstrap/complete', async (req, res, next) => {
+    const { token, totpCode } = req.body || {};
+    if (!validBootstrapToken(token) || typeof totpCode !== 'string' || !/^\d{6}$/.test(totpCode)) {
+      return errorResponse(res, req, 400, 'INVALID_REQUEST', 'A valid setup token and current authenticator code are required');
+    }
+
+    let connection;
+    let lockAcquired = false;
+    try {
+      decodeKey(process.env.AUTH_ENCRYPTION_KEY, 'AUTH_ENCRYPTION_KEY');
+      connection = await getUtcConnection(database);
+      const [lockRows] = await connection.execute(
+        'SELECT GET_LOCK(?, 5) AS acquired',
+        ['enmris_bootstrap_admin'],
+      );
+      lockAcquired = Number(lockRows[0].acquired) === 1;
+      if (!lockAcquired) {
+        return errorResponse(res, req, 503, 'BOOTSTRAP_BUSY', 'Administrator setup is busy; try again');
+      }
+
+      await connection.beginTransaction();
+      const [users] = await connection.execute('SELECT COUNT(*) AS count FROM app_users');
+      if (Number(users[0].count) !== 0) {
+        await connection.rollback();
+        return errorResponse(res, req, 409, 'BOOTSTRAP_NOT_AVAILABLE', 'Administrator setup is available only on a fresh database');
+      }
+
+      const [challenges] = await connection.execute(
+        `SELECT * FROM admin_bootstrap_challenges
+         WHERE token_hash = ? AND expires_at > UTC_TIMESTAMP(3)
+         LIMIT 1 FOR UPDATE`,
+        [hashSessionToken(token)],
+      );
+      const challenge = challenges[0];
+      if (!challenge) {
+        await connection.rollback();
+        return errorResponse(res, req, 400, 'INVALID_BOOTSTRAP', 'The administrator setup has expired or is invalid');
+      }
+
+      const secret = decryptTotpSecret(challenge.totp_secret_encrypted, process.env.AUTH_ENCRYPTION_KEY);
+      const codeStep = getTotpStep(secret, totpCode, 0);
+      if (codeStep === null) {
+        await connection.rollback();
+        return errorResponse(res, req, 400, 'INVALID_AUTHENTICATOR_CODE', 'The authenticator code is invalid');
+      }
+
+      const userId = crypto.randomUUID();
+      await connection.execute(
+        `INSERT INTO app_users
+           (id, name, email, password_hash, role_code, officer_position,
+            totp_secret_encrypted, totp_last_used_step, mfa_enabled, active)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, TRUE, TRUE)`,
+        [
+          userId,
+          challenge.name,
+          challenge.email,
+          challenge.password_hash,
+          ROLE_CODES.ADMIN,
+          challenge.totp_secret_encrypted,
+          codeStep,
+        ],
+      );
+      const recoveryCodes = createRecoveryCodes();
+      await connection.execute(
+        `INSERT INTO user_recovery_codes (id, user_id, code_hash)
+         VALUES ${recoveryCodes.map(() => '(?, ?, ?)').join(', ')}`,
+        recoveryCodes.flatMap((code) => [crypto.randomUUID(), userId, hashSessionToken(code)]),
+      );
+      await connection.execute(
+        'DELETE FROM admin_bootstrap_challenges WHERE id = ?',
+        [challenge.id],
+      );
+      await writeAudit(connection, {
+        action: 'ADMIN_BOOTSTRAPPED',
+        entityName: 'app_users',
+        recordId: userId,
+        afterValue: { email: challenge.email, roleCode: ROLE_CODES.ADMIN, mfaEnabled: true },
+        reason: 'Fresh-install administrator setup',
+        requestId: req.requestId,
+      });
+      await connection.commit();
+      return res.status(201).json({ data: { message: 'Administrator account created', recoveryCodes } });
+    } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
+      return next(error);
+    } finally {
+      if (connection && lockAcquired) {
+        await connection.execute('SELECT RELEASE_LOCK(?)', ['enmris_bootstrap_admin']).catch(() => {});
+      }
+      if (connection) connection.release();
     }
   });
 
@@ -494,12 +725,14 @@ function createAuthRouter({ database }) {
       await connection.beginTransaction();
       const [users] = await connection.execute(
         `SELECT u.id, u.name, u.email, u.role_code AS role, u.role_code,
-                account_role.display_label AS role_label, u.officer_position,
-                position_role.display_label AS officer_position_label, u.mfa_enabled,
+                account_role.display_label AS role_label, u.officer_position, u.functional_role_code,
+                position_role.display_label AS officer_position_label,
+                functional_role.display_label AS functional_role_label, u.mfa_enabled,
                 u.mfa_enrollment_secret_encrypted
          FROM app_users u
          JOIN roles account_role ON account_role.role_code = u.role_code
          LEFT JOIN roles position_role ON position_role.role_code = u.officer_position
+         LEFT JOIN roles functional_role ON functional_role.role_code = u.functional_role_code
          WHERE u.mfa_enrollment_token_hash = ?
            AND u.mfa_enrollment_expires_at > UTC_TIMESTAMP(3)
            AND u.active = TRUE AND u.mfa_enabled = FALSE
@@ -512,6 +745,7 @@ function createAuthRouter({ database }) {
           userId: user.id,
           roleCode: user.role_code,
           positionCode: user.officer_position,
+          functionalRoleCode: user.functional_role_code,
         })
         : [];
       if (!user || permissions.length === 0) {
@@ -581,6 +815,7 @@ function createAuthRouter({ database }) {
         );
       }
 
+      const recoveryCodes = createRecoveryCodes();
       await connection.execute(
         `UPDATE app_users
          SET totp_secret_encrypted = ?, mfa_enrollment_secret_encrypted = NULL,
@@ -592,6 +827,11 @@ function createAuthRouter({ database }) {
           codeStep,
           user.id,
         ],
+      );
+      await connection.execute(
+        `INSERT INTO user_recovery_codes (id, user_id, code_hash)
+         VALUES ${recoveryCodes.map(() => '(?, ?, ?)').join(', ')}`,
+        recoveryCodes.flatMap((code) => [crypto.randomUUID(), user.id, hashSessionToken(code)]),
       );
       await completeOfficerReplacement(connection, user, req.requestId);
       const sessionToken = crypto.randomBytes(32).toString('base64url');
@@ -643,6 +883,7 @@ function createAuthRouter({ database }) {
             permissions,
           },
           idleTimeoutMinutes: IDLE_TIMEOUT_MINUTES,
+          recoveryCodes,
         },
       });
     } catch (error) {

@@ -10,10 +10,11 @@ export default function OfficerMfaEnrollmentPage() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [recoveryCodes, setRecoveryCodes] = useState(null);
   const email = pendingMfaEnrollment?.user.email || '';
   const secret = pendingMfaEnrollment?.totpSecret || '';
 
-  if (user) return <Navigate to="/dashboard" replace />;
+  if (user && !recoveryCodes) return <Navigate to="/dashboard" replace />;
   if (!pendingMfaEnrollment) return <Navigate to="/login" replace />;
 
   async function copySecret() {
@@ -30,13 +31,33 @@ export default function OfficerMfaEnrollmentPage() {
     setError('');
     setSubmitting(true);
     try {
-      await completeMfaEnrollment({ totpCode });
-      navigate('/dashboard', { replace: true });
+      const session = await completeMfaEnrollment({ totpCode });
+      setRecoveryCodes(session.recoveryCodes || []);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (recoveryCodes) {
+    return (
+      <main className="min-h-screen bg-mist px-5 py-10 sm:px-8">
+        <section className="mx-auto max-w-2xl rounded-3xl bg-white p-6 shadow-card sm:p-10">
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal">Save these recovery codes</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink">Authenticator recovery codes</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            Store these codes somewhere secure. Each code works once if you lose access to your authenticator. They will not be shown again.
+          </p>
+          <div className="mt-6 grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-5 font-mono text-sm font-semibold text-ink sm:grid-cols-3">
+            {recoveryCodes.map((code) => <code key={code}>{code}</code>)}
+          </div>
+          <button className="button-primary mt-7" onClick={() => navigate('/dashboard', { replace: true })} type="button">
+            I saved my recovery codes
+          </button>
+        </section>
+      </main>
+    );
   }
 
   return (

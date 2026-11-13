@@ -1,7 +1,8 @@
--- Apply once to an existing eNMRIS database before enabling staff authentication.
+-- Apply to an existing eNMRIS database before enabling staff authentication.
+-- Safe to rerun after a partial application.
 USE enmris;
 
-CREATE TABLE auth_login_attempts (
+CREATE TABLE IF NOT EXISTS auth_login_attempts (
   bucket_hash BINARY(32) NOT NULL,
   window_started_at DATETIME(3) NOT NULL,
   failure_count TINYINT UNSIGNED NOT NULL DEFAULT 0,

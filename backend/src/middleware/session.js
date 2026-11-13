@@ -51,12 +51,14 @@ function createSessionMiddleware(database, sessionCookieName = 'enmris_session',
 
       const [users] = await connection.execute(
         `SELECT u.id, u.name, u.email, u.role_code AS role, u.role_code,
-                r.display_label AS role_label, u.officer_position,
-                p.display_label AS officer_position_label
+                r.display_label AS role_label, u.officer_position, u.functional_role_code,
+                p.display_label AS officer_position_label,
+                f.display_label AS functional_role_label
          FROM app_sessions s
          JOIN app_users u ON u.id = s.user_id
          JOIN roles r ON r.role_code = u.role_code AND r.active = TRUE
          LEFT JOIN roles p ON p.role_code = u.officer_position AND p.active = TRUE
+         LEFT JOIN roles f ON f.role_code = u.functional_role_code AND f.active = TRUE
          WHERE s.session_token_hash = ? AND s.revoked_at IS NULL AND u.active = TRUE
            AND (? = FALSE OR u.role_code <> ?)`,
         [tokenHash, production, ROLE_CODES.ADMIN_TESTER],
@@ -69,6 +71,7 @@ function createSessionMiddleware(database, sessionCookieName = 'enmris_session',
         userId: users[0].id,
         roleCode: users[0].role_code,
         positionCode: users[0].officer_position,
+        functionalRoleCode: users[0].functional_role_code,
       });
       req.user = {
         id: users[0].id,
@@ -79,6 +82,8 @@ function createSessionMiddleware(database, sessionCookieName = 'enmris_session',
         roleLabel: users[0].role_label,
         officerPosition: users[0].officer_position,
         officerPositionLabel: users[0].officer_position_label,
+        functionalRoleCode: users[0].functional_role_code,
+        functionalRoleLabel: users[0].functional_role_label,
         permissions,
       };
       req.sessionTokenHash = tokenHash;

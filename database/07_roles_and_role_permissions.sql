@@ -1,8 +1,9 @@
--- Apply once after 06_officer_replacement_workflow.sql on an existing database.
+-- Apply after 06_officer_replacement_workflow.sql on an existing database.
+-- Safe to rerun when the role schema was already created by the baseline schema.
 -- Role codes are stable identifiers; display labels and permission grants are editable data.
 USE enmris;
 
-CREATE TABLE roles (
+CREATE TABLE IF NOT EXISTS roles (
   role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   display_label VARCHAR(120) NOT NULL,
   is_position BOOLEAN NOT NULL DEFAULT FALSE,
@@ -13,7 +14,7 @@ CREATE TABLE roles (
   PRIMARY KEY (role_code)
 ) ENGINE=InnoDB;
 
-INSERT INTO roles (role_code, display_label, is_position) VALUES
+INSERT IGNORE INTO roles (role_code, display_label, is_position) VALUES
   ('ADMIN', 'Administrator', FALSE),
   ('ADMIN_TESTER', 'Admin Tester', FALSE),
   ('OFFICER', 'Officer', FALSE),
@@ -23,7 +24,7 @@ INSERT INTO roles (role_code, display_label, is_position) VALUES
   ('SYSTEM', 'System', FALSE),
   ('CLIENT', 'Client', FALSE);
 
-CREATE TABLE role_permissions (
+CREATE TABLE IF NOT EXISTS role_permissions (
   role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   permission_code VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   granted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -32,8 +33,9 @@ CREATE TABLE role_permissions (
     REFERENCES roles (role_code) ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
-INSERT INTO role_permissions (role_code, permission_code) VALUES
+INSERT IGNORE INTO role_permissions (role_code, permission_code) VALUES
   ('ADMIN', 'invite_admin'),
+  ('ADMIN', 'start_replacement'),
   ('ADMIN_TESTER', 'invite_admin'),
   ('BOARD_CHAIR', 'approve_admin_replacement'),
   ('BOARD_VICE_CHAIR', 'approve_admin_replacement'),
@@ -41,12 +43,27 @@ INSERT INTO role_permissions (role_code, permission_code) VALUES
   ('BOARD_CHAIR', 'approve_replacement'),
   ('BOARD_VICE_CHAIR', 'approve_replacement');
 
-ALTER TABLE app_users
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS migrate_legacy_role_schema //
+
+CREATE PROCEDURE migrate_legacy_role_schema()
+BEGIN
+  DECLARE role_column_count INT DEFAULT 0;
+
+  SELECT COUNT(*) INTO role_column_count
+    FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'app_users'
+     AND COLUMN_NAME = 'role_code';
+
+  IF role_column_count = 0 THEN
+    ALTER TABLE app_users
   ADD COLUMN role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER password_hash;
 
-UPDATE app_users SET role_code = role;
+    UPDATE app_users SET role_code = role;
 
-ALTER TABLE app_users
+    ALTER TABLE app_users
   DROP CHECK chk_app_users_officer_position,
   MODIFY COLUMN officer_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   MODIFY COLUMN role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -57,14 +74,14 @@ ALTER TABLE app_users
     REFERENCES roles (role_code) ON DELETE RESTRICT,
   ADD CONSTRAINT chk_app_users_officer_position CHECK (
     role_code = 'OFFICER' OR officer_position IS NULL
-  );
+    );
 
-ALTER TABLE admin_invitations
+    ALTER TABLE admin_invitations
   MODIFY COLUMN decision_officer_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   ADD CONSTRAINT fk_admin_invitations_decider_position FOREIGN KEY (decision_officer_position)
     REFERENCES roles (role_code) ON DELETE RESTRICT;
 
-ALTER TABLE officer_replacement_requests
+    ALTER TABLE officer_replacement_requests
   DROP INDEX uq_officer_replacements_open_position,
   DROP COLUMN open_position,
   MODIFY COLUMN outgoing_position VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -81,29 +98,58 @@ ALTER TABLE officer_replacement_requests
     REFERENCES roles (role_code) ON DELETE RESTRICT,
   ADD CONSTRAINT fk_officer_replacements_decision_position FOREIGN KEY (decision_officer_position)
     REFERENCES roles (role_code) ON DELETE RESTRICT;
+  END IF;
+END //
 
-ALTER TABLE audit_log
-  ADD COLUMN actor_role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER actor_id,
-  ADD COLUMN actor_role_label VARCHAR(120) NULL AFTER actor_role_code;
+CALL migrate_legacy_role_schema() //
+DROP PROCEDURE migrate_legacy_role_schema //
 
-UPDATE audit_log
-SET actor_role_code = 'SYSTEM', actor_role_label = 'System'
-WHERE actor_type = 'SYSTEM' OR actor_id IS NULL;
+DELIMITER ;
 
-UPDATE audit_log
-SET actor_role_code = 'CLIENT', actor_role_label = 'Client'
-WHERE actor_type = 'CLIENT';
+DELIMITER //
 
-UPDATE audit_log a
-JOIN app_users u ON u.id = a.actor_id
-JOIN roles r ON r.role_code = u.role_code
-LEFT JOIN roles position_role ON position_role.role_code = u.officer_position
-SET a.actor_role_code = COALESCE(position_role.role_code, r.role_code),
-    a.actor_role_label = COALESCE(position_role.display_label, r.display_label)
-WHERE a.actor_type = 'USER' AND a.actor_id IS NOT NULL;
+DROP PROCEDURE IF EXISTS migrate_legacy_audit_roles //
 
-ALTER TABLE audit_log
-  MODIFY COLUMN actor_role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  MODIFY COLUMN actor_role_label VARCHAR(120) NOT NULL,
-  ADD CONSTRAINT fk_audit_log_actor_role FOREIGN KEY (actor_role_code)
-    REFERENCES roles (role_code) ON DELETE RESTRICT;
+CREATE PROCEDURE migrate_legacy_audit_roles()
+BEGIN
+  DECLARE actor_role_column_count INT DEFAULT 0;
+
+  SELECT COUNT(*) INTO actor_role_column_count
+    FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'audit_log'
+     AND COLUMN_NAME = 'actor_role_code';
+
+  IF actor_role_column_count = 0 THEN
+    ALTER TABLE audit_log
+      ADD COLUMN actor_role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER actor_id,
+      ADD COLUMN actor_role_label VARCHAR(120) NULL AFTER actor_role_code;
+
+    UPDATE audit_log
+    SET actor_role_code = 'SYSTEM', actor_role_label = 'System'
+    WHERE actor_type = 'SYSTEM' OR actor_id IS NULL;
+
+    UPDATE audit_log
+    SET actor_role_code = 'CLIENT', actor_role_label = 'Client'
+    WHERE actor_type = 'CLIENT';
+
+    UPDATE audit_log a
+    JOIN app_users u ON u.id = a.actor_id
+    JOIN roles r ON r.role_code = u.role_code
+    LEFT JOIN roles position_role ON position_role.role_code = u.officer_position
+    SET a.actor_role_code = COALESCE(position_role.role_code, r.role_code),
+        a.actor_role_label = COALESCE(position_role.display_label, r.display_label)
+    WHERE a.actor_type = 'USER' AND a.actor_id IS NOT NULL;
+
+    ALTER TABLE audit_log
+      MODIFY COLUMN actor_role_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      MODIFY COLUMN actor_role_label VARCHAR(120) NOT NULL,
+      ADD CONSTRAINT fk_audit_log_actor_role FOREIGN KEY (actor_role_code)
+        REFERENCES roles (role_code) ON DELETE RESTRICT;
+  END IF;
+END //
+
+CALL migrate_legacy_audit_roles() //
+DROP PROCEDURE migrate_legacy_audit_roles //
+
+DELIMITER ;

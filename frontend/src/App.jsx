@@ -13,6 +13,9 @@ import RecoverySetupPage from './pages/RecoverySetupPage.jsx';
 import MedicineRegistrationsPage from './pages/MedicineRegistrationsPage.jsx';
 import EstablishmentLicensingPage from './pages/EstablishmentLicensingPage.jsx';
 import ImportExportControlledPage from './pages/ImportExportControlledPage.jsx';
+import BatchesRecallsPage from './pages/BatchesRecallsPage.jsx';
+import RegistrySearchPage from './pages/RegistrySearchPage.jsx';
+import PublicRegistryPage from './pages/PublicRegistryPage.jsx';
 
 function LoadingScreen({ message = 'Checking your secure session…' }) {
   return (
@@ -61,6 +64,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/public-register" element={<PublicRegistryPage />} />
       <Route path="/setup-admin" element={<AdminSetupPage />} />
       <Route path="/bootstrap-admin" element={<AdminBootstrapPage />} />
       <Route path="/setup-officer" element={<OfficerSetupPage />} />
@@ -112,6 +116,22 @@ export default function App() {
         element={(
           <ProtectedDashboard>
             <ImportExportControlledPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/batches-recalls"
+        element={(
+          <ProtectedDashboard>
+            <BatchesRecallsPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/registry-search"
+        element={(
+          <ProtectedDashboard>
+            <RegistrySearchPage />
           </ProtectedDashboard>
         )}
       />

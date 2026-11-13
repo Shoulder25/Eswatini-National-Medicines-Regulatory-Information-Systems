@@ -14,6 +14,7 @@ function SideNavigation({ open, onToggle, permissions, onSignOut, signingOut }) 
   const mayInspectEstablishments = permissions.includes(PERMISSION_CODES.CONDUCT_INSPECTIONS);
   const mayManageImportExport = permissions.includes(PERMISSION_CODES.MANAGE_IMPORT_EXPORT_PERMITS);
   const mayManageControlled = permissions.includes(PERMISSION_CODES.MANAGE_CONTROLLED_SUBSTANCES);
+  const mayManageRecalls = permissions.includes(PERMISSION_CODES.MANAGE_RECALLS);
 
   return (
     <>
@@ -51,6 +52,12 @@ function SideNavigation({ open, onToggle, permissions, onSignOut, signingOut }) 
           )}
           {(mayManageImportExport || mayManageControlled) && (
             <Link className="side-nav-link" to="/import-export-controlled">Import/export control</Link>
+          )}
+          {(mayManageRegistration || mayManageRecalls) && (
+            <Link className="side-nav-link" to="/batches-recalls">Batches and recalls</Link>
+          )}
+          {(mayManageRegistration || mayEvaluateRegistration || mayManageRecalls) && (
+            <Link className="side-nav-link" to="/registry-search">Search register</Link>
           )}
           {(mayInviteAdmin || mayApproveAdmin || mayStartReplacement) && (
             <Link className="side-nav-link" to="/account-recovery">Account recovery</Link>

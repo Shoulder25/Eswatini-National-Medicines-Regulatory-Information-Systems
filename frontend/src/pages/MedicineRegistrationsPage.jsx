@@ -8,6 +8,7 @@ import {
   evaluateMedicineRegistration,
   getMedicineRegistrations,
 } from '../services/medicineRegistrations.js';
+import { downloadCmsProducts, importCmsProducts } from '../services/cmsProducts.js';
 
 const initialForm = {
   applicationType: 'NEW',
@@ -115,9 +116,32 @@ export default function MedicineRegistrationsPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [cmsFile, setCmsFile] = useState(null);
 
   function updateDetail(name, value) {
     setForm((current) => ({ ...current, details: { ...current.details, [name]: value } }));
+  }
+
+  async function importCmsWorkbook() {
+    if (!cmsFile) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const result = await importCmsProducts(cmsFile);
+      setMessage(`Imported ${result.productsImported} products and ${result.programmesImported} programme records. Rejected rows: ${result.rejected.length}.`);
+      setCmsFile(null);
+      await load();
+    } catch (requestError) { setError(requestError.message); } finally { setBusy(false); }
+  }
+
+  async function exportCmsWorkbook() {
+    setBusy(true); setError('');
+    try {
+      const blob = await downloadCmsProducts();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url; anchor.download = 'CMS Products Export.xlsx'; anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (requestError) { setError(requestError.message); } finally { setBusy(false); }
   }
 
   async function load() {
@@ -203,6 +227,27 @@ export default function MedicineRegistrationsPage() {
             Source: South African Health Products Regulatory Authority (SAHPRA). Use the official document as a reference for the applicant dossier; this eNMRIS form captures the initial regulatory record.
           </p>
         </section>
+
+        {mayManage && (
+          <section className="mt-6 rounded-2xl bg-white p-6 shadow-card">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-teal">CMS product register</p>
+            <h2 className="mt-2 text-lg font-semibold text-ink">Import or export the CMS workbook</h2>
+            <p className="mt-2 text-sm text-slate-600">Use the <code>products</code> and <code>programProducts</code> sheets from the CMS Products Template. Existing product codes and programme rows are updated without creating duplicates.</p>
+            <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-end">
+              <label className="block flex-1 text-sm font-semibold text-slate-700">
+                CMS workbook (.xlsx)
+                <input
+                  className="field mt-2 block w-full"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  type="file"
+                  onChange={(event) => setCmsFile(event.target.files?.[0] || null)}
+                />
+              </label>
+              <button className="button-primary" disabled={busy || !cmsFile} onClick={importCmsWorkbook} type="button">Import workbook</button>
+              <button className="button-secondary" disabled={busy} onClick={exportCmsWorkbook} type="button">Export workbook</button>
+            </div>
+          </section>
+        )}
 
         {mayManage && (
           <form className="mt-6 rounded-2xl bg-white p-6 shadow-card" onSubmit={submitApplication}>

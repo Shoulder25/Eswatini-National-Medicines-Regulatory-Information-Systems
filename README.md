@@ -28,11 +28,11 @@ approved for use.
 1. In MySQL Workbench, on a fresh database run `database/01_schema.sql`, then
    `database/02_seed.sql`. On an existing database, apply
    `database/03_auth_login_attempts.sql` if needed, then apply migrations 04,
-   05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, and 16 once and in order before restarting.
+   05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, and 17 once and in order before restarting.
    Migration 05 depends on 04, migration 06 depends on 05, migration 07 depends on
    06, migration 08 depends on 07, migration 09 depends on 08, migration 10
    depends on 09, migration 11 depends on 10, migration 12 depends on 11, and
-   migration 13 depends on 12, migration 14 depends on 13, migration 15 depends on 14, and migration 16 depends on 15. Do not rerun
+   migration 13 depends on 12, migration 14 depends on 13, migration 15 depends on 14, migration 16 depends on 15, and migration 17 depends on 16. Do not rerun
    numbered migrations or run the fresh-install schema over an existing DB.
    To verify the import, run
    `SELECT COUNT(*) FROM enmris.products;` and

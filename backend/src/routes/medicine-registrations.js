@@ -13,6 +13,7 @@ const EVALUATION_OUTCOMES = new Set([
   'REQUEST_INFORMATION',
 ]);
 const DECISIONS = new Set(['APPROVE', 'REJECT']);
+const STATUS_REQUESTS = new Set(['REGISTERED', 'SUSPENDED', 'REVOKED']);
 
 function respondError(res, req, status, code, message) {
   return res.status(status).json({ error: { code, message }, requestId: req.requestId });
@@ -293,6 +294,124 @@ function createMedicineRegistrationRouter({ database, authenticate }) {
       } finally {
         if (connection) connection.release();
       }
+    });
+
+  router.get('/status-requests', authenticate,
+    requirePermission(PERMISSION_CODES.MANAGE_REGISTRATION, PERMISSION_CODES.APPROVE_REGULATORY_DECISIONS),
+    async (req, res, next) => {
+      let connection;
+      try {
+        connection = await getUtcConnection(database);
+        const [rows] = await connection.execute(
+          `SELECT q.id, q.registration_id, q.requested_status, q.reason, q.decision,
+                  q.requested_at, q.decided_at, r.registration_number, r.status AS current_status,
+                  p.product_code, p.name AS product_name, requester.name AS requested_by_name,
+                  decider.name AS decided_by_name
+           FROM registration_status_change_requests q
+           JOIN registrations r ON r.id = q.registration_id
+           JOIN products p ON p.id = r.product_id
+           JOIN app_users requester ON requester.id = q.requested_by
+           LEFT JOIN app_users decider ON decider.id = q.decided_by
+           ORDER BY q.requested_at DESC LIMIT 200`,
+        );
+        return res.json({ data: rows });
+      } catch (error) { return next(error); } finally { if (connection) connection.release(); }
+    });
+
+  router.post('/registrations/:id/status-request', authenticate, requireSameOrigin,
+    requirePermission(PERMISSION_CODES.MANAGE_REGISTRATION),
+    async (req, res, next) => {
+      const { requestedStatus, reason } = req.body || {};
+      if (!STATUS_REQUESTS.has(requestedStatus) || !validText(reason, 4000)) {
+        return respondError(res, req, 400, 'INVALID_REQUEST', 'A requested status and reason are required');
+      }
+      let connection;
+      try {
+        connection = await getUtcConnection(database);
+        const [registrations] = await connection.execute(
+          'SELECT id, status FROM registrations WHERE id = ? LIMIT 1',
+          [req.params.id],
+        );
+        if (!registrations.length) return respondError(res, req, 404, 'NOT_FOUND', 'Registration was not found');
+        if (registrations[0].status === requestedStatus) {
+          return respondError(res, req, 409, 'NO_CHANGE', 'The registration already has that status');
+        }
+        const id = crypto.randomUUID();
+        await connection.execute(
+          `INSERT INTO registration_status_change_requests
+             (id, registration_id, requested_status, reason, requested_by)
+           VALUES (?, ?, ?, ?, ?)`,
+          [id, req.params.id, requestedStatus, reason.trim(), req.user.id],
+        );
+        await writeAudit(connection, {
+          actorId: req.user.id, action: 'REGISTRATION_STATUS_CHANGE_REQUESTED',
+          entityName: 'registration_status_change_requests', recordId: id,
+          afterValue: { registrationId: req.params.id, requestedStatus }, reason: reason.trim(),
+          requestId: req.requestId,
+        });
+        return res.status(201).json({ data: { id, decision: 'PENDING' } });
+      } catch (error) { return next(error); } finally { if (connection) connection.release(); }
+    });
+
+  router.post('/status-requests/:id/decision', authenticate, requireSameOrigin,
+    requirePermission(PERMISSION_CODES.APPROVE_REGULATORY_DECISIONS),
+    async (req, res, next) => {
+      const { decision, reason } = req.body || {};
+      if (!['APPROVE', 'REJECT'].includes(decision) || !validText(reason, 4000)) {
+        return respondError(res, req, 400, 'INVALID_REQUEST', 'A decision and reason are required');
+      }
+      let connection;
+      try {
+        connection = await getUtcConnection(database);
+        await connection.beginTransaction();
+        const [requests] = await connection.execute(
+          `SELECT q.*, r.status AS current_status
+           FROM registration_status_change_requests q
+           JOIN registrations r ON r.id = q.registration_id
+           WHERE q.id = ? AND q.decision = 'PENDING' LIMIT 1 FOR UPDATE`,
+          [req.params.id],
+        );
+        const request = requests[0];
+        if (!request) {
+          await connection.rollback();
+          return respondError(res, req, 404, 'NOT_FOUND', 'Pending status request was not found');
+        }
+        if (request.requested_by === req.user.id) {
+          await connection.rollback();
+          return respondError(res, req, 409, 'SEPARATION_REQUIRED', 'The requester cannot approve the status change');
+        }
+        const finalDecision = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+        await connection.execute(
+          `UPDATE registration_status_change_requests
+           SET decision = ?, decided_by = ?, decided_at = UTC_TIMESTAMP(3)
+           WHERE id = ?`,
+          [finalDecision, req.user.id, request.id],
+        );
+        if (decision === 'APPROVE') {
+          await connection.execute(
+            `UPDATE registrations SET status = ?, status_reason = ?, updated_by = ? WHERE id = ?`,
+            [request.requested_status, reason.trim(), req.user.id, request.registration_id],
+          );
+          await connection.execute(
+            `INSERT INTO registration_status_history
+               (id, registration_id, change_request_id, old_status, new_status, reason, changed_by, approved_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [crypto.randomUUID(), request.registration_id, request.id, request.current_status,
+              request.requested_status, reason.trim(), request.requested_by, req.user.id],
+          );
+        }
+        await writeAudit(connection, {
+          actorId: req.user.id, action: 'REGISTRATION_STATUS_CHANGE_DECIDED',
+          entityName: 'registration_status_change_requests', recordId: request.id,
+          afterValue: { decision: finalDecision, requestedStatus: request.requested_status },
+          reason: reason.trim(), requestId: req.requestId,
+        });
+        await connection.commit();
+        return res.json({ data: { id: request.id, decision: finalDecision, status: decision === 'APPROVE' ? request.requested_status : request.current_status } });
+      } catch (error) {
+        if (connection) await connection.rollback().catch(() => {});
+        return next(error);
+      } finally { if (connection) connection.release(); }
     });
 
   return router;

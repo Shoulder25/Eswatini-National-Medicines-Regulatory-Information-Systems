@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import { PERMISSION_CODES } from '../config/roles.js';
+import { getDashboardSummary } from '../services/dashboard.js';
 
 function SideNavigation({ open, onToggle, permissions, onSignOut, signingOut }) {
   const mayInviteAdmin = permissions.includes(PERMISSION_CODES.INVITE_ADMIN);
@@ -15,6 +16,8 @@ function SideNavigation({ open, onToggle, permissions, onSignOut, signingOut }) 
   const mayManageImportExport = permissions.includes(PERMISSION_CODES.MANAGE_IMPORT_EXPORT_PERMITS);
   const mayManageControlled = permissions.includes(PERMISSION_CODES.MANAGE_CONTROLLED_SUBSTANCES);
   const mayManageRecalls = permissions.includes(PERMISSION_CODES.MANAGE_RECALLS);
+  const mayManagePharmacovigilance = permissions.includes(PERMISSION_CODES.MANAGE_PHARMACOVIGILANCE);
+  const mayManageSystem = permissions.includes(PERMISSION_CODES.MANAGE_SYSTEM);
 
   return (
     <>
@@ -59,6 +62,12 @@ function SideNavigation({ open, onToggle, permissions, onSignOut, signingOut }) 
           {(mayManageRegistration || mayEvaluateRegistration || mayManageRecalls) && (
             <Link className="side-nav-link" to="/registry-search">Search register</Link>
           )}
+          {mayManagePharmacovigilance && (
+            <Link className="side-nav-link" to="/pharmacovigilance">Pharmacovigilance</Link>
+          )}
+          {mayManageSystem && (
+            <Link className="side-nav-link" to="/api-clients">API access</Link>
+          )}
           {(mayInviteAdmin || mayApproveAdmin || mayStartReplacement) && (
             <Link className="side-nav-link" to="/account-recovery">Account recovery</Link>
           )}
@@ -85,6 +94,7 @@ export default function DashboardPage() {
   const [signingOut, setSigningOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(true);
   const navigate = useNavigate();
+  const [summary, setSummary] = useState(null);
 
   async function handleSignOut() {
     setLogoutError('');
@@ -97,6 +107,10 @@ export default function DashboardPage() {
     } finally {
       setSigningOut(false);
     }
+
+    useEffect(() => {
+      getDashboardSummary().then(setSummary).catch(() => setSummary(null));
+    }, []);
   }
 
   const firstName = user.name.trim().split(/\s+/)[0];
@@ -172,6 +186,23 @@ export default function DashboardPage() {
               <p className="mt-1 text-sm text-slate-600">Sign out when leaving a shared device.</p>
             </article>
           </section>
+          {summary && (
+            <section className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Regulatory overview">
+              {[
+                ['Products', summary.products],
+                ['Registered', summary.registered],
+                ['Pending', summary.pending],
+                ['Batches', summary.batches],
+                ['Active recalls', summary.active_recalls],
+                ['Open safety reports', summary.open_safety_reports],
+              ].map(([label, value]) => (
+                <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" key={label}>
+                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">{label}</p>
+                  <p className="mt-3 text-3xl font-semibold text-ink">{value ?? 0}</p>
+                </article>
+              ))}
+            </section>
+          )}
         </main>
         <footer className="mx-auto max-w-7xl px-5 pb-8 text-xs text-slate-500 sm:px-8">
           Medicines Regulatory Authority · Eswatini

@@ -2,9 +2,14 @@ const express = require('express');
 const { getUtcConnection } = require('../config/connection');
 const { requirePermission } = require('../middleware/authorization');
 const { PERMISSION_CODES } = require('../config/roles');
+const { createApiClientMiddleware } = require('../middleware/api-client');
 
 function createRegistrySearchRouter({ database, authenticate }) {
   const router = express.Router();
+  const apiRegistryRead = createApiClientMiddleware(database, 'registry:read');
+  const apiFhirRead = createApiClientMiddleware(database, 'fhir:read');
+  const registryRead = (req, res, next) => (req.get('authorization') ? apiRegistryRead(req, res, next) : authenticate(req, res, next));
+  const fhirRead = (req, res, next) => (req.get('authorization') ? apiFhirRead(req, res, next) : authenticate(req, res, next));
   const readAccess = requirePermission(
     PERMISSION_CODES.MANAGE_REGISTRATION,
     PERMISSION_CODES.EVALUATE_REGISTRATION,
@@ -44,7 +49,7 @@ function createRegistrySearchRouter({ database, authenticate }) {
     }
   });
 
-  router.get('/', authenticate, readAccess, async (req, res, next) => {
+  router.get('/', registryRead, (req, res, next) => (req.apiClient ? next() : readAccess(req, res, next)), async (req, res, next) => {
     const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     if (!query || query.length > 100) {
       return res.status(400).json({ error: { code: 'INVALID_QUERY', message: 'A search term of 1 to 100 characters is required' }, requestId: req.requestId });
@@ -80,7 +85,7 @@ function createRegistrySearchRouter({ database, authenticate }) {
     }
   });
 
-  router.get('/fhir/metadata', authenticate, readAccess, (req, res) => res.json({
+  router.get('/fhir/metadata', fhirRead, (req, res, next) => (req.apiClient ? next() : readAccess(req, res, next)), (req, res) => res.json({
     resourceType: 'CapabilityStatement',
     status: 'active',
     kind: 'instance',
@@ -89,7 +94,7 @@ function createRegistrySearchRouter({ database, authenticate }) {
     rest: [{ mode: 'server', resource: [{ type: 'Medication', interaction: [{ code: 'read' }, { code: 'search-type' }] }] }],
   }));
 
-  router.get('/fhir/Medication', authenticate, readAccess, async (req, res, next) => {
+  router.get('/fhir/Medication', fhirRead, (req, res, next) => (req.apiClient ? next() : readAccess(req, res, next)), async (req, res, next) => {
     const query = typeof req.query.name === 'string' ? req.query.name.trim() : '';
     let connection;
     try {
@@ -111,7 +116,7 @@ function createRegistrySearchRouter({ database, authenticate }) {
     } catch (error) { return next(error); } finally { if (connection) connection.release(); }
   });
 
-  router.get('/fhir/Medication/:id', authenticate, readAccess, async (req, res, next) => {
+  router.get('/fhir/Medication/:id', fhirRead, (req, res, next) => (req.apiClient ? next() : readAccess(req, res, next)), async (req, res, next) => {
     let connection;
     try {
       connection = await getUtcConnection(database);

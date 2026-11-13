@@ -10,6 +10,10 @@ const { createEstablishmentLicensingRouter } = require('./routes/establishment-l
 const { createImportExportControlledRouter } = require('./routes/import-export-controlled');
 const { createBatchesRecallsRouter } = require('./routes/batches-recalls');
 const { createRegistrySearchRouter } = require('./routes/registry-search');
+const { createPharmacovigilanceRouter } = require('./routes/pharmacovigilance');
+const { createCmsProductsRouter } = require('./routes/cms-products');
+const { createApiClientsRouter } = require('./routes/api-clients');
+const { createDashboardRouter } = require('./routes/dashboard');
 const { createSessionMiddleware } = require('./middleware/session');
 
 function createApp({ database }) {
@@ -44,6 +48,13 @@ function createApp({ database }) {
   app.use('/health', createHealthRouter(database));
   if (typeof database.getConnection === 'function') {
     app.use('/api/v1/auth', createAuthRouter({ database }));
+    app.use(
+      '/api/v1/dashboard',
+      createDashboardRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
     app.use(
       '/api/v1/admin-invitations',
       (req, res, next) => {
@@ -163,6 +174,54 @@ function createApp({ database }) {
         authenticate: createSessionMiddleware(database),
       }),
     );
+    app.use(
+      '/api/v1/pharmacovigilance',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createPharmacovigilanceRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
+    app.use(
+      '/api/v1/cms-products',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createCmsProductsRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
+    app.use(
+      '/api/v1/api-clients',
+      (req, res, next) => {
+        if (process.env.NODE_ENV === 'production' && !req.secure) {
+          return res.status(400).json({
+            error: { code: 'HTTPS_REQUIRED', message: 'HTTPS is required' },
+            requestId: req.requestId,
+          });
+        }
+        return next();
+      },
+      createApiClientsRouter({
+        database,
+        authenticate: createSessionMiddleware(database),
+      }),
+    );
   }
 
   app.use((req, res) => {
@@ -183,7 +242,7 @@ function createApp({ database }) {
     const schemaMessage = String(error.sqlMessage || '');
     const migrationRequired = (
       error.code === 'ER_NO_SUCH_TABLE' &&
-      /admin_bootstrap_challenges|admin_invitations|officer_replacement_requests|user_recovery_codes|account_recovery_requests|account_recovery_approvals|registration_applications|registration_evaluations|establishment_applications|establishment_inspections|controlled_substance_permits|controlled_substance_quota_usage|batches|recalls|recall_batches|auth_login_attempts|role_permissions|\broles\b/i.test(schemaMessage)
+      /admin_bootstrap_challenges|admin_invitations|officer_replacement_requests|user_recovery_codes|account_recovery_requests|account_recovery_approvals|registration_applications|registration_evaluations|establishment_applications|establishment_inspections|controlled_substance_permits|controlled_substance_quota_usage|pharmacovigilance_reports|batches|recalls|recall_batches|auth_login_attempts|role_permissions|\broles\b/i.test(schemaMessage)
     ) || (
       error.code === 'ER_BAD_FIELD_ERROR' &&
       /role_code|actor_role_code|actor_role_label|officer_position|totp_last_used_step|mfa_enrollment_token_hash|mfa_enrollment_expires_at|mfa_enrollment_secret_encrypted|setup_totp_secret_encrypted|registration_applications|registration_evaluations/i.test(schemaMessage)

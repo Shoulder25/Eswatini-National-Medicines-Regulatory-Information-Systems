@@ -16,6 +16,8 @@ import ImportExportControlledPage from './pages/ImportExportControlledPage.jsx';
 import BatchesRecallsPage from './pages/BatchesRecallsPage.jsx';
 import RegistrySearchPage from './pages/RegistrySearchPage.jsx';
 import PublicRegistryPage from './pages/PublicRegistryPage.jsx';
+import PharmacovigilancePage from './pages/PharmacovigilancePage.jsx';
+import ApiClientsPage from './pages/ApiClientsPage.jsx';
 
 function LoadingScreen({ message = 'Checking your secure session…' }) {
   return (
@@ -132,6 +134,22 @@ export default function App() {
         element={(
           <ProtectedDashboard>
             <RegistrySearchPage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/pharmacovigilance"
+        element={(
+          <ProtectedDashboard>
+            <PharmacovigilancePage />
+          </ProtectedDashboard>
+        )}
+      />
+      <Route
+        path="/api-clients"
+        element={(
+          <ProtectedDashboard>
+            <ApiClientsPage />
           </ProtectedDashboard>
         )}
       />
